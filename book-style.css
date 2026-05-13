@@ -1,0 +1,299 @@
+/* ============================================================
+   Rust Agentic Programming — Book PDF Stylesheet
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,wght@0,400;0,600;0,700;1,400&family=Source+Sans+3:wght@400;600;700&family=Source+Code+Pro:wght@400;600&display=swap');
+
+/* ── Page Setup ─────────────────────────────────────────────── */
+@page {
+  size: 8.5in 11in;
+  margin: 1in 1in 0.85in 1.1in;
+}
+
+/* ── Root / Body ─────────────────────────────────────────────── */
+:root {
+  --brand:        #b94d00;   /* Rust orange — ferris the crab   */
+  --accent:       #e8701a;   /* warm orange for highlights      */
+  --code-bg:      #1e1e2e;   /* dark code background            */
+  --code-fg:      #cdd6f4;   /* code foreground                 */
+  --border:       #d0d7de;
+  --text:         #1c2128;
+  --muted:        #656d76;
+  --link:         #0969da;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: 'Source Serif 4', 'Georgia', serif;
+  font-size: 11pt;
+  line-height: 1.75;
+  color: var(--text);
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Headings ────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Source Sans 3', 'Helvetica Neue', sans-serif;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-top: 2em;
+  margin-bottom: 0.5em;
+  color: var(--text);
+  page-break-after: avoid;
+}
+
+/* Part / chapter headers */
+h1 {
+  font-size: 26pt;
+  color: var(--brand);
+  border-bottom: 4px solid var(--brand);
+  padding-bottom: 0.3em;
+  margin-top: 3em;
+  page-break-before: always;
+}
+
+h1:first-child,
+h1.chapter {
+  page-break-before: always;
+}
+
+h2 {
+  font-size: 18pt;
+  color: var(--brand);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.2em;
+}
+
+h3 {
+  font-size: 14pt;
+  color: #7a3300;
+}
+
+h4 {
+  font-size: 12pt;
+  color: var(--text);
+  font-style: italic;
+}
+
+h5, h6 {
+  font-size: 11pt;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ── Paragraphs ──────────────────────────────────────────────── */
+p {
+  margin: 0.7em 0;
+  orphans: 3;
+  widows: 3;
+}
+
+/* ── Code ────────────────────────────────────────────────────── */
+code {
+  font-family: 'Source Code Pro', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 9pt;
+  background: #f1f3f5;
+  color: #b94d00;
+  padding: 2px 5px;
+  border-radius: 3px;
+  border: 1px solid #e0e3e7;
+}
+
+pre {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 1em 1.2em;
+  border-radius: 6px;
+  font-family: 'Source Code Pro', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 8.5pt;
+  line-height: 1.55;
+  overflow-x: auto;
+  page-break-inside: avoid;
+  margin: 1em 0;
+  border-left: 4px solid var(--accent);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+}
+
+pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* Language label */
+pre[class*="language-"]::before,
+pre[class*="rust"]::before {
+  content: attr(class);
+  display: block;
+  color: #6c7086;
+  font-size: 7.5pt;
+  margin-bottom: 0.5em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid #313244;
+  padding-bottom: 0.4em;
+}
+
+/* ── Syntax highlighting (dark theme) ────────────────────────── */
+.hljs-keyword, .hljs-selector-tag  { color: #cba6f7; }
+.hljs-string                        { color: #a6e3a1; }
+.hljs-comment                       { color: #6c7086; font-style: italic; }
+.hljs-number, .hljs-literal         { color: #fab387; }
+.hljs-class, .hljs-type             { color: #89b4fa; }
+.hljs-function, .hljs-title         { color: #89dceb; }
+.hljs-annotation                    { color: #f9e2af; }
+.hljs-attribute                     { color: #f38ba8; }
+.hljs-built_in                      { color: #89dceb; }
+.hljs-tag                           { color: #f38ba8; }
+.hljs-attr                          { color: #89b4fa; }
+
+/* ── Tables ──────────────────────────────────────────────────── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5em 0;
+  font-family: 'Source Sans 3', sans-serif;
+  font-size: 10pt;
+  page-break-inside: avoid;
+}
+
+thead {
+  background: var(--brand);
+  color: white;
+}
+
+thead th {
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+tbody tr:nth-child(even) {
+  background: #f6f8fa;
+}
+
+tbody tr:hover {
+  background: #fff3ed;
+}
+
+td, th {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+
+/* ── Blockquotes / Callouts ──────────────────────────────────── */
+blockquote {
+  margin: 1.5em 0;
+  padding: 1em 1.2em;
+  background: #fff8f0;
+  border-left: 4px solid var(--brand);
+  border-radius: 0 6px 6px 0;
+  color: #7a3300;
+  font-style: italic;
+  page-break-inside: avoid;
+}
+
+blockquote p {
+  margin: 0;
+}
+
+blockquote:has(p:first-child > strong:first-child) {
+  border-left-color: var(--accent);
+  background: #fff3e0;
+  color: #7a3b00;
+}
+
+/* ── Lists ───────────────────────────────────────────────────── */
+ul, ol {
+  margin: 0.5em 0 0.5em 1.5em;
+  padding: 0;
+}
+
+li {
+  margin: 0.25em 0;
+  line-height: 1.6;
+}
+
+li > ul, li > ol {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+/* ── Links ───────────────────────────────────────────────────── */
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* ── Horizontal Rules ────────────────────────────────────────── */
+hr {
+  border: none;
+  border-top: 2px solid var(--border);
+  margin: 2em 0;
+}
+
+/* ── Images ──────────────────────────────────────────────────── */
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1em auto;
+  border-radius: 4px;
+}
+
+/* ── Strikethrough / Mark ────────────────────────────────────── */
+del { color: var(--muted); }
+mark {
+  background: #fff3cd;
+  padding: 0 3px;
+  border-radius: 2px;
+}
+
+/* ── Strong / Em ─────────────────────────────────────────────── */
+strong { font-weight: 700; color: var(--text); }
+em     { font-style: italic; color: #7a3300; }
+
+/* ── Cover page ──────────────────────────────────────────────── */
+body > h1:first-of-type {
+  font-size: 36pt;
+  text-align: center;
+  margin-top: 3in;
+  border: none;
+  page-break-before: avoid;
+}
+
+/* ── Part separator page ─────────────────────────────────────── */
+h1[id*="part-"] {
+  text-align: center;
+  font-size: 30pt;
+  padding: 1.5in 0;
+  border: none;
+  color: var(--brand);
+}
+
+/* ── Caption / small text ────────────────────────────────────── */
+figcaption, small, .caption {
+  font-family: 'Source Sans 3', sans-serif;
+  font-size: 9pt;
+  color: var(--muted);
+  text-align: center;
+  margin-top: 0.3em;
+}
+
+/* ── Utility ─────────────────────────────────────────────────── */
+.page-break { page-break-after: always; }
+.avoid-break { page-break-inside: avoid; }

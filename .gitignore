@@ -2,6 +2,11 @@
 code-examples/target/
 code-examples/**/*.lock
 
+# Node (PDF generation)
+node_modules/
+package-lock.json
+package.json
+
 # Environment / secrets
 .env
 .env.*
