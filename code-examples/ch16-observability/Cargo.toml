@@ -1,0 +1,16 @@
+[package]
+name = "ch16-observability"
+version = "0.1.0"
+edition = "2024"
+description = "Chapter 16: Observability, Security, and Cost"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+dotenvy = { workspace = true }
+rig-core = { workspace = true }
+governor = "0.10"

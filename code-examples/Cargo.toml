@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "ch03-llm-basics",
+    "ch04-tool-calling",
+    "ch05-structured-output",
+    "ch06-agents",
+    "ch07-axum-api",
+    "ch08-rag",
+    "ch09-swiftide",
+    "ch10-memory",
+    "ch11-mcp",
+    "ch12-graph-workflows",
+    "ch13-graph-agents",
+    "ch14-stateful-workflows",
+    "ch16-observability",
+    "ch17-deployment",
+    "ch19-capstone-research-agent",
+    "ch20-capstone-multiagent-pipeline",
+]
+
+# Shared dependencies — pin exact versions verified 2026-05-12
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"                  # JSON Schema generation for structured output (rig-core uses 1.0.4)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dotenvy = "0.15"
+futures = "0.3"                 # Stream combinators for rig streaming output
+axum = "0.8"                   # Web framework — 74M downloads, updated Apr 2026
+tower-http = { version = "0.6", features = ["cors"] }  # CORS layer for Axum
+tokio-stream = "0.1"           # Stream utilities for Tokio async runtime
+
+# LLM / agent crates (versions bumped to 0.37 — 2026-05-13)
+async-openai = "0.38"          # 4.8M downloads, updated May 11 2026
+rig-core = "0.37"              # 772k downloads — bumped from 0.36 (0.37 adds memory module)
+rig-derive = "0.1"             # proc-macro crate for #[rig_tool] attribute
+rig-memory = "0.1"             # SlidingWindowMemory / TokenWindowMemory policies (requires rig-core ^0.37)
+swiftide = "0.32"              # 81k downloads, updated Nov 15 2025
+autoagents = "0.3"             # 7.3k downloads, updated Mar 25 2026
+graph-flow = "0.5"             # 6.6k downloads, updated Apr 26 2026 — small project, API may change
+rmcp = "1.6"                   # 9.7M downloads, updated May 1 2026 — only 1.x stable crate

@@ -1,0 +1,19 @@
+[package]
+name = "ch07-axum-api"
+version = "0.1.0"
+edition = "2024"
+description = "Chapter 7: Rig with Axum — Building a Streaming Web API"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+futures = { workspace = true }
+rig-core = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+tokio-stream = { workspace = true }

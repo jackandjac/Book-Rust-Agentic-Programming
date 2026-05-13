@@ -1,0 +1,25 @@
+[package]
+name = "ch11-mcp"
+version = "0.1.0"
+edition = "2024"
+description = "Chapter 11: MCP — Model Context Protocol in Rust"
+
+[[bin]]
+name = "mcp-server"
+path = "src/server.rs"
+
+[[bin]]
+name = "mcp-client"
+path = "src/client.rs"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+rmcp = { workspace = true, features = ["server", "client", "macros", "transport-io", "transport-child-process"] }
+schemars = { workspace = true }
+rig-core = { workspace = true }

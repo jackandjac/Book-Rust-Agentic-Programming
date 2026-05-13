@@ -1,0 +1,17 @@
+[package]
+name = "ch04-tool-calling"
+version = "0.1.0"
+edition = "2024"
+description = "Chapter 4: Tool Calling with Rig"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+rig-core = { workspace = true }
+rig-derive = { workspace = true }
+async-openai = { workspace = true }

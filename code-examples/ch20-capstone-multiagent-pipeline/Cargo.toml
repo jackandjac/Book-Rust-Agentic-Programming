@@ -1,0 +1,17 @@
+[package]
+name = "ch20-capstone-multiagent-pipeline"
+version = "0.1.0"
+edition = "2024"
+description = "Chapter 15 (Capstone): Multi-Agent Pipeline end-to-end"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+graph-flow = { workspace = true }
+autoagents = { workspace = true }
+rig-core = { workspace = true }

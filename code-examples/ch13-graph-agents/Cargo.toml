@@ -1,0 +1,17 @@
+[package]
+name = "ch13-graph-agents"
+version = "0.1.0"
+edition = "2024"
+description = "Chapter 13: Building Agents with graph-flow (ReAct pattern)"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+graph-flow = { workspace = true }
+rig-core = { workspace = true }
+async-trait = "0.1"

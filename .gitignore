@@ -1,0 +1,17 @@
+# Rust build artifacts
+code-examples/target/
+code-examples/**/*.lock
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store

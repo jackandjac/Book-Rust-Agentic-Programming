@@ -1,0 +1,19 @@
+[package]
+name = "ch03-llm-basics"
+version = "0.1.0"
+edition = "2024"
+description = "Chapter 3: LLM Basics in Rust — async-openai streaming chat CLI"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+async-openai = { workspace = true }
+
+[[bin]]
+name = "streaming-chat"
+path = "src/main.rs"

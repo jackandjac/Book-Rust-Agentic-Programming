@@ -1,0 +1,16 @@
+[package]
+name = "ch14-stateful-workflows"
+version = "0.1.0"
+edition = "2024"
+description = "Chapter 14: Stateful Workflows and Persistence"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+graph-flow = { workspace = true }
+async-trait = "0.1"

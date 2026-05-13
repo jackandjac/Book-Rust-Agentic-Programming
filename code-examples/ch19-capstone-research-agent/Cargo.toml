@@ -1,0 +1,17 @@
+[package]
+name = "ch19-capstone-research-agent"
+version = "0.1.0"
+edition = "2024"
+description = "Chapter 14 (Capstone): Building a Research Agent end-to-end"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+rig-core = { workspace = true }
+swiftide = { workspace = true }
+rmcp = { workspace = true }
