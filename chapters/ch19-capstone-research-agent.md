@@ -257,7 +257,7 @@ The MCP server entry point:
 
 ```rust
 let server = ResearchServer {
-    client: std::sync::Arc::new(openai::Client::from_env()?),
+    client: std::sync::Arc::new(openai::Client::from_env()),
 };
 let service = server.serve(stdio()).await?;
 service.waiting().await?;
@@ -284,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let rig_client = openai::Client::from_env()?;
+    let rig_client = openai::Client::from_env();
     let swiftide_client = SwiftideOpenAI::builder()
         .default_embed_model("text-embedding-3-small")
         .default_prompt_model("gpt-4o-mini")

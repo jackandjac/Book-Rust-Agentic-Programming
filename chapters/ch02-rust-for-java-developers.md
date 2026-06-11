@@ -490,9 +490,16 @@ fn main() {
         None => println!("No user found"),
     }
 
-    // Shorthand options:
+    // Shorthand option: provide a fallback value
     let user2 = find_user(1).unwrap_or_else(|| String::from("anonymous"));
-    let user3 = find_user(1)?; // In functions returning Option — propagates None
+    println!("{user2}");
+}
+
+// The ? operator works on Option in a function that returns Option.
+// It propagates None to the caller — equivalent to a short-circuit return.
+fn first_user() -> Option<String> {
+    let name = find_user(1)?; // if None, return None immediately
+    Some(name.to_uppercase())  // Some("ALICE") if id == 1
 }
 ```
 
@@ -872,10 +879,25 @@ As JSON:
 
 This is the skeleton of every AI agent component in this book. In Chapter 3, `EchoResponder` becomes a real LLM client, and `process_message` becomes a streaming chat function.
 
-To run this example from the companion repository:
+To run this example yourself, create a new project:
 
 ```bash
-cd code-examples/ch03-llm-basics  # we'll build this in Chapter 3
+cargo new ch02-demo && cd ch02-demo
+```
+
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+```
+
+Paste the code into `src/main.rs`, then:
+
+```bash
 cargo run
 ```
 

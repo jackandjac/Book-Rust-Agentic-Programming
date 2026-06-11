@@ -193,7 +193,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = Arc::new(openai::Client::from_env()?);
+    let client = Arc::new(openai::Client::from_env());
     let storage = Arc::new(InMemorySessionStorage::new());
     let graph = Arc::new(build_pipeline(client));
     let runner = FlowRunner::new(graph, storage);

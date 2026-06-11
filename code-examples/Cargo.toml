@@ -35,11 +35,10 @@ axum = "0.8"                   # Web framework — 74M downloads, updated Apr 20
 tower-http = { version = "0.6", features = ["cors"] }  # CORS layer for Axum
 tokio-stream = "0.1"           # Stream utilities for Tokio async runtime
 
-# LLM / agent crates (versions bumped to 0.37 — 2026-05-13)
+# LLM / agent crates
 async-openai = "0.38"          # 4.8M downloads, updated May 11 2026
-rig-core = "0.37"              # 772k downloads — bumped from 0.36 (0.37 adds memory module)
+rig-core = "0.37"              # 772k downloads
 rig-derive = "0.1"             # proc-macro crate for #[rig_tool] attribute
-rig-memory = "0.1"             # SlidingWindowMemory / TokenWindowMemory policies (requires rig-core ^0.37)
 swiftide = "0.32"              # 81k downloads, updated Nov 15 2025
 autoagents = "0.3"             # 7.3k downloads, updated Mar 25 2026
 graph-flow = "0.5"             # 6.6k downloads, updated Apr 26 2026 — small project, API may change

@@ -115,7 +115,7 @@ use rig::client::{CompletionClient, ProviderClient};
 use rig::embeddings::EmbeddingsBuilder;
 use rig::providers::openai;
 
-let client = openai::Client::from_env()?;
+let client = openai::Client::from_env();
 
 // Create the embedding model.
 // TEXT_EMBEDDING_3_SMALL: 1536 dimensions, fast, cost-effective for retrieval.
@@ -453,7 +453,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
     let embedding_model = client.embedding_model(openai::TEXT_EMBEDDING_3_SMALL);
 
     println!("Embedding {} documents...", sample_corpus().len());

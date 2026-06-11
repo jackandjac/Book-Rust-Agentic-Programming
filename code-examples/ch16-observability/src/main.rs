@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
     // 10 requests per second limit (in production: tune to your API tier)
     let limiter = build_rate_limiter(10);
 

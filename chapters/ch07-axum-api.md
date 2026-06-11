@@ -128,10 +128,10 @@ This is the core of the chapter. Rig's `stream_prompt()` returns a `StreamingPro
 The chain is:
 
 ```
-agent.stream_prompt(text).conversation(id).await
+agent.stream_prompt(text).await
     → Pin<Box<dyn Stream<Item = Result<MultiTurnStreamItem, _>> + Send>>
 
-        ↓ map each StreamAssistantItem::Text → Event::default().data(text.text)
+        ↓ map each StreamAssistantItem::Text(chunk) → Event::default().data(chunk)
         ↓ on FinalResponse → Event::default().event("done").data("{}")
 
     → impl Stream<Item = Result<Event, Infallible>>
@@ -160,22 +160,17 @@ async fn sse_handler(agent: &openai::Agent, message: &str, conv_id: &str)
     let conv_id = conv_id.to_owned();
 
     tokio::spawn(async move {
-        let stream = match agent.stream_prompt(&message).conversation(&conv_id).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = tx.send(Ok(Event::default().event("error").data(e.to_string()))).await;
-                return;
-            }
-        };
+        // stream_prompt returns StreamingPromptRequest; awaiting it yields the stream
+        let mut stream = agent.stream_prompt(&message).await;
 
         tokio::pin!(stream);
 
         while let Some(item) = stream.next().await {
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => {
-                    if let StreamedAssistantContent::Text(text) = content {
-                        // text.text: String — the incremental text chunk
-                        let event = Event::default().data(text.text);
+                    // StreamedAssistantContent::Text(chunk) — chunk is the String directly
+                    if let StreamedAssistantContent::Text(chunk) = content {
+                        let event = Event::default().data(chunk);
                         if tx.send(Ok(event)).await.is_err() {
                             break; // Client disconnected
                         }
@@ -200,7 +195,7 @@ async fn sse_handler(agent: &openai::Agent, message: &str, conv_id: &str)
 
 ### Key Details
 
-**`StreamedAssistantContent::Text(text)`** — the `text` field is `text.text: String`, containing the incremental text chunk. Other variants (`ToolCall`, `ToolCallDelta`, `Reasoning`, `ReasoningDelta`, `Final`) are skipped in a plain chat endpoint.
+**`StreamedAssistantContent::Text(chunk)`** — the inner value is a `String` containing the incremental text. Other variants (`ToolCallDelta`, `FinalUsage`) are skipped in a plain chat endpoint.
 
 **`MultiTurnStreamItem` is `#[non_exhaustive]`** — always include a `_ => {}` arm. New variants may appear in future rig releases.
 
@@ -255,7 +250,9 @@ async fn chat_stream(
 
 ## 7.6 Session Management with `conversation_id`
 
-Multiple concurrent users can share one `Agent` instance because rig's managed memory is scoped by conversation ID. Each request carries a `conversation_id` that isolates its history from other users' conversations.
+Multiple concurrent users can share one `Agent` instance. Rig's `Agent` is stateless — it holds no conversation history itself. History management is the application's responsibility.
+
+Each request carries a `conversation_id` string that your application uses as a key to load and store history:
 
 ```rust
 #[derive(serde::Deserialize)]
@@ -265,32 +262,33 @@ struct ChatRequest {
 }
 ```
 
-The agent was built with `.memory(InMemoryConversationMemory::new())` at startup. Each call to `.conversation(&conv_id)` retrieves and stores history under that key:
+### In-Process History (for prototypes)
+
+For a single-instance service that doesn't need restart persistence, keep a `DashMap<String, Vec<Message>>` (or `Arc<Mutex<HashMap<String, Vec<Message>>>>`) in `AppState`:
 
 ```rust
-let stream = agent
-    .stream_prompt(&req.message)
-    .conversation(&req.conversation_id)  // scope history to this user
-    .await?;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use rig::completion::Message;
+
+struct AppState {
+    agent: openai::Agent,
+    // session_id → conversation history
+    sessions: Mutex<HashMap<String, Vec<Message>>>,
+}
 ```
 
-### Limitations of In-Process Memory
+Before each call: lock, clone the history for this session, unlock. After the stream completes: lock, extend with the new messages, unlock. This isolates each user's history without any external dependency.
 
-`InMemoryConversationMemory` stores all history in a `HashMap` inside the process. This means:
-
-- History is **lost on restart** — sessions don't survive deploys
-- Not shared across **multiple service instances** — incompatible with horizontal scaling
-- **Unbounded** — long conversations accumulate indefinitely
-
-For production, replace in-process memory with a database-backed store:
+### Production: External Storage
 
 | Approach | Description |
 |---|---|
-| **Managed memory** | rig's `InMemoryConversationMemory` — fine for prototypes and single-instance services |
-| **External cache** | Store `Vec<Message>` in Redis; serialize with `serde_json`; key by `conversation_id` |
-| **Database** | Persist messages in PostgreSQL; load the last N messages before each call with `.chat()` |
+| **In-process `HashMap`** | Simple, zero-dependency — lost on restart, not distributed |
+| **Redis** | `LRANGE`/`RPUSH` with `serde_json`; TTL-based expiry; key by `conversation_id` |
+| **PostgreSQL** | Full persistence; load last N messages per session before each call |
 
-The Redis approach: before each call, load history from Redis → call `.chat(prompt, history)` → append the new exchange → write back to Redis. This is the same manual history pattern from Chapter 6, just with Redis as the storage backend instead of an in-memory `Vec`.
+The pattern is always the same: load `Vec<Message>` → pass to `.stream_chat(prompt, &history)` → collect `FinalResponse::history()` → persist updated messages. Chapter 10 covers window sizing strategies to keep histories within model context limits.
 
 ---
 
@@ -384,21 +382,15 @@ async fn chat_stream(
     let conv_id = req.conversation_id.clone();
 
     tokio::spawn(async move {
-        let stream = match agent.stream_prompt(&message).conversation(&conv_id).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = tx.send(Ok(Event::default().event("error").data(e.to_string()))).await;
-                return;
-            }
-        };
+        let mut stream = agent.stream_prompt(&message).await;
 
         tokio::pin!(stream);
 
         while let Some(item) = stream.next().await {
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => {
-                    if let StreamedAssistantContent::Text(text) = content {
-                        let event = Event::default().data(text.text);
+                    if let StreamedAssistantContent::Text(chunk) = content {
+                        let event = Event::default().data(chunk);
                         if tx.send(Ok(event)).await.is_err() {
                             break;
                         }
@@ -425,7 +417,7 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
     let agent = client
         .agent(openai::GPT_4O_MINI)
         .preamble("You are a helpful Rust programming assistant.")
@@ -530,7 +522,7 @@ Axum extracts State<Arc<AppState>> + Json<ChatRequest>
     ↓
 chat_stream handler spawns a tokio task
     ↓
-Task: agent.stream_prompt(message).conversation(id).await
+Task: agent.stream_prompt(message).await
     → MultiTurnStreamItem stream
     → map Text chunks → mpsc channel
     ↓
@@ -551,8 +543,8 @@ In practice, this pattern is idiomatic in Axum SSE handlers and is how the offic
 
 For horizontal scaling (multiple service instances):
 
-1. Replace `InMemoryConversationMemory` with Redis-backed history storage
-2. Use `.chat(prompt, history)` instead of `.prompt().conversation(id)` — load history from Redis before each call, write it back after
+1. Replace the in-process `SessionStore` with Redis-backed history storage
+2. Use `.chat(prompt, &history)` — load history from Redis before each call, push turns and write back after
 3. Any instance can serve any request because conversation state is in Redis, not the process
 
 The `Agent` itself is stateless across requests — it's the memory that needs to be externalized.
@@ -563,10 +555,10 @@ The `Agent` itself is stateless across requests — it's the memory that needs t
 
 - Axum handlers are async functions; return types implement `IntoResponse`. `Sse<S>` is a built-in response type for Server-Sent Events.
 - Bridge rig streaming to Axum SSE with an `mpsc` channel + `tokio::spawn`: the task drives the rig stream; the `ReceiverStream` is handed to `Sse::new()`.
-- `MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))` — `t.text` is the incremental string chunk to send. `FinalResponse` signals the end.
+- `MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(chunk))` — `chunk` is a `String` (the incremental text). `FinalResponse` signals the end.
 - `Agent<M>: Clone` when `M: Clone` — `openai::Agent` can be cloned into `tokio::spawn` closures directly. No `Arc<Mutex<Agent>>` needed.
 - Share the agent across handlers via `Arc<AppState>` + `State<Arc<AppState>>` extractor. Router state is set with `.with_state(state)`.
-- `InMemoryConversationMemory` scoped by `conversation_id` handles multi-user sessions in a single process. For multi-instance deployments, externalize history to Redis or a database.
+- For multi-user sessions: hold a `Mutex<HashMap<String, Vec<Message>>>` in `AppState` (§7.6). For multi-instance deployments, externalize history to Redis.
 - `tower-http`'s `CorsLayer` handles CORS; add it last with `.layer(cors)` to apply to all routes.
 
 ---

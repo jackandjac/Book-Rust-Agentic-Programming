@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
     // Build the request using the builder pattern
     let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-4o-mini")
-        .max_tokens(256u32)
+        .max_completion_tokens(256u32)
         .messages([
             ChatCompletionRequestSystemMessage::from(
                 "You are a concise assistant. Answer in one sentence.",
@@ -256,7 +256,7 @@ async fn main() -> Result<()> {
 
     let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-4o-mini")
-        .max_tokens(512u32)
+        .max_completion_tokens(512u32)
         .messages([
             ChatCompletionRequestSystemMessage::from(
                 "You are a helpful assistant explaining Rust to Java developers.",
@@ -405,7 +405,7 @@ async fn send_and_record(
 ) -> Result<String> {
     let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-4o-mini")
-        .max_tokens(512u32)
+        .max_completion_tokens(512u32)
         .messages(history.clone())
         .build()?;
 
@@ -458,7 +458,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
     // Creates client reading OPENAI_API_KEY from environment
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
 
     // Build an agent with a system prompt (preamble)
     let agent = client
@@ -529,43 +529,35 @@ use rig::{
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
 
     let agent = client
         .agent(openai::GPT_4O_MINI)
         .preamble("You are a Rust tutor helping Java developers.")
         .build();
 
-    // History of previous messages (role + content pairs)
+    // History of previous messages — grow it manually after each turn
     let mut history: Vec<Message> = vec![];
 
-    // Turn 1
-    let reply1 = agent
-        .chat("What is ownership in Rust?", history.clone())
-        .await?;
+    // Turn 1: pass history by reference (borrows, does not consume)
+    let q1 = "What is ownership in Rust?";
+    let reply1 = agent.chat(q1, &history).await?;
     println!("Turn 1: {reply1}\n");
 
-    // Record the exchange in history
-    history.push(Message {
-        role: "user".to_string(),
-        content: "What is ownership in Rust?".to_string(),
-    });
-    history.push(Message {
-        role: "assistant".to_string(),
-        content: reply1,
-    });
+    // Append this exchange manually — chat() does NOT mutate history
+    history.push(Message::user(q1));
+    history.push(Message::assistant(reply1.as_str()));
 
-    // Turn 2 — history includes the previous turn
-    let reply2 = agent
-        .chat("How does that differ from Java's GC?", history.clone())
-        .await?;
+    // Turn 2 — history now contains the previous exchange
+    let q2 = "How does that differ from Java's GC?";
+    let reply2 = agent.chat(q2, &history).await?;
     println!("Turn 2: {reply2}");
 
     Ok(())
 }
 ```
 
-> **API note (rig-core 0.37):** `Agent::chat()` takes `&mut Vec<Message>` and **automatically appends** both the user turn and the assistant response after each call. You do not need to push messages manually — see Chapter 6 for the full multi-turn pattern. Full API: [`rig::agent`](https://docs.rs/rig-core/0.37.0/rig/agent/).
+> **API note:** `Agent::chat()` takes `chat_history: impl IntoIterator<Item: Into<Message>>`. Passing `&history` works because `&Vec<T>` implements `IntoIterator`. The method does **not** mutate the history — you must push the user and assistant turns yourself after each call using `Message::user(text)` and `Message::assistant(text)`. See Chapter 6 for the full multi-turn pattern. Full API: [`rig::agent`](https://docs.rs/rig-core/latest/rig/agent/).
 
 ---
 
@@ -590,12 +582,10 @@ use rig::{
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     // Reads ANTHROPIC_API_KEY from environment
-    let client = anthropic::Client::from_env()?;
+    let client = anthropic::Client::from_env();
 
-    // Constant verified: rig-core 0.37 anthropic::completion::CLAUDE_SONNET_4_6
-    // The path is anthropic::completion::CLAUDE_SONNET_4_6 or re-exported — check docs.rs
     let agent = client
-        .agent(anthropic::completion::CLAUDE_SONNET_4_6)
+        .agent(anthropic::completion::CLAUDE_SONNET_4_6)  // "claude-sonnet-4-6"
         .preamble("You are a concise assistant.")
         .build();
 
@@ -619,17 +609,16 @@ Then in Rust:
 
 ```rust
 use rig::{
-    client::{CompletionClient, ProviderClient},
+    client::{CompletionClient, Nothing},
     completion::Prompt,
     providers::ollama,
 };
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Client::new() defaults to http://localhost:11434, no auth
-    // Signature: Client::new(None) or Client::new(Nothing) depending on version
-    // If compilation fails, try: ollama::Client::builder().build().unwrap()
-    let client = ollama::Client::new(None).unwrap();
+    // Nothing is rig's unit type for "no API key required"
+    // Defaults to http://localhost:11434
+    let client = ollama::Client::new(Nothing).unwrap();
 
     let agent = client
         .agent("llama3.2")    // model name as string — must match pulled model
@@ -649,7 +638,7 @@ The same code structure works regardless of provider. This is the key benefit of
 | Provider | Crate constant | Env var | Local? |
 |---------|---------------|---------|--------|
 | OpenAI | `openai::GPT_4O_MINI` | `OPENAI_API_KEY` | ❌ |
-| Anthropic | `anthropic::CLAUDE_3_5_SONNET` | `ANTHROPIC_API_KEY` | ❌ |
+| Anthropic | `anthropic::completion::CLAUDE_SONNET_4_6` | `ANTHROPIC_API_KEY` | ❌ |
 | Ollama | Model name as string | None | ✅ |
 | Azure OpenAI | Via `openai::Client::from_url()` | `AZURE_OPENAI_API_KEY` | ❌ |
 
@@ -660,7 +649,7 @@ The same code structure works regardless of provider. This is the key benefit of
 Let's build a complete interactive streaming chat CLI — the equivalent of a minimal ChatGPT terminal interface. This pulls together everything in the chapter.
 
 ```rust
-// src/bin/chat-cli.rs
+// code-examples/ch03-llm-basics/src/main.rs
 use anyhow::Result;
 use async_openai::{
     types::chat::{
@@ -715,7 +704,7 @@ async fn main() -> Result<()> {
         // Build streaming request with full history
         let request = CreateChatCompletionRequestArgs::default()
             .model("gpt-4o-mini")
-            .max_tokens(1024u32)
+            .max_completion_tokens(1024u32)
             .messages(history.clone())
             .build()?;
 
@@ -754,18 +743,12 @@ async fn main() -> Result<()> {
 }
 ```
 
-Add the binary to `Cargo.toml`:
-
-```toml
-[[bin]]
-name = "chat-cli"
-path = "src/bin/chat-cli.rs"
-```
-
 Run it:
 
 ```bash
-cargo run --bin chat-cli
+cd code-examples
+export OPENAI_API_KEY=sk-...
+cargo run -p ch03-llm-basics
 ```
 
 Sample session:
@@ -796,10 +779,10 @@ This chapter focused on the essentials. Here's what's next:
 |-------|---------|
 | Tool calling (function calling) | Chapter 4 |
 | Structured output with serde | Chapter 5 |
-| Embeddings and vector search | Chapter 6 |
-| Memory management (truncation, summarization) | Chapter 7 |
-| Anthropic API details | Chapter 4 (tool calling) |
-| Local LLMs with Kalosm (full local inference) | Chapter 13 |
+| Rig agents and multi-turn memory | Chapter 6 |
+| Memory management (truncation, summarization) | Chapter 10 |
+| RAG and embeddings | Chapter 8 |
+| Local LLMs with Kalosm (full local inference) | Chapter 17 |
 
 **async-openai features not covered here:**
 - Vision / multimodal inputs (image in the message)

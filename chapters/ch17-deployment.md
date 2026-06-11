@@ -311,10 +311,10 @@ Rust's low memory footprint means you can run more replicas per node than an equ
 
 ### Stateful scale-out
 
-For stateful agents (rig's `InMemoryConversationMemory`, in-process vector stores), you need sticky sessions or shared external state:
+For stateful agents using in-process session stores or in-memory vector stores, you need sticky sessions or shared external state:
 
 - **Sticky sessions** — route all requests from a user to the same pod (simple but limits flexibility)
-- **Redis-backed memory** — implement `ConversationMemory` over Redis (Chapter 10 §10.4) — any pod can serve any user
+- **Redis-backed session store** — load/save `Vec<Message>` via Redis (Chapter 10 §10.4) — any pod can serve any user
 - **graph-flow + PostgreSQL** — sessions in PostgreSQL; any pod can resume any session (Chapter 14)
 
 ### Backpressure

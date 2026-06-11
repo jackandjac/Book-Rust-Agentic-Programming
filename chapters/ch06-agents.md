@@ -1,7 +1,7 @@
 # Chapter 6: Rig Agents and Multi-Turn Conversations
 
 > **Framework versions in this chapter:**  
-> `rig-core = "0.37"` (772k downloads — memory module added in 0.37)  
+> `rig-core = "0.37"` (772k downloads)  
 > `futures = "0.3"` (Stream combinators for streaming output)  
 > `tokio = "1"`, `anyhow = "1"`, `dotenvy = "0.15"`
 >
@@ -12,7 +12,7 @@
 ## What You'll Learn
 
 - How rig's `Agent` type manages system prompts, context, and LLM calls
-- Two conversation patterns: manual `Vec<Message>` history vs rig-managed `InMemoryConversationMemory`
+- Two conversation patterns: manual `Vec<Message>` history with `.chat()`, and streaming with `FinalResponse::history()`
 - The `AgentBuilder` configuration surface: preamble, context, temperature, max tokens
 - Streaming agent output with `stream_prompt()` and `stream_chat()`
 - How to write persona and guardrail logic in a preamble
@@ -27,7 +27,7 @@ In rig, an `Agent<M>` is a thin wrapper around a completion model (`M: Completio
 - A **preamble** — the system prompt, set at build time
 - **Context documents** — additional static background injected before each call
 - **Tools** — callable functions the LLM can invoke (covered in Chapter 4)
-- **Memory** — optional managed conversation history (covered in §6.4)
+- **Conversation history** — passed in on each call; management is the application's responsibility (§6.3, §6.4)
 
 That's it. The `Agent` does not run a loop, plan, or take autonomous actions by default — those patterns come from the graph and multi-agent chapters. Here, "agent" means a configured LLM interface with a persona and optional memory.
 
@@ -43,7 +43,7 @@ The `AgentBuilder` is obtained via `client.agent(model)`. All configuration is o
 use rig::client::{CompletionClient, ProviderClient};
 use rig::providers::openai;
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a helpful assistant.")
     .build();
@@ -65,7 +65,7 @@ use rig::providers::openai;
 ### The Full Builder API
 
 ```rust
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O)
     // System prompt — the agent's persona and instructions
     .preamble("You are an expert Rust developer. Be concise and precise.")
@@ -76,9 +76,7 @@ let agent = openai::Client::from_env()?
     .temperature(0.2)       // lower = more deterministic
     .max_tokens(1024)
     // Tools — see Chapter 4
-    // .tool(my_tool)
-    // Managed memory — see §6.4
-    // .memory(memory)
+    // .tool(my_tool)  // see Chapter 4
     .build();
 ```
 
@@ -90,7 +88,6 @@ let agent = openai::Client::from_env()?
 | `.temperature(f64)` | Sampling temperature (0.0–1.0; lower = more deterministic) |
 | `.max_tokens(u64)` | Maximum tokens in the response |
 | `.tool(tool)` | Register a callable tool (Chapter 4) |
-| `.memory(mem)` | Enable managed conversation memory (§6.4) |
 
 ---
 
@@ -101,7 +98,7 @@ The simplest multi-turn pattern: maintain a `Vec<Message>` yourself and pass it 
 ### The `Message` Type
 
 ```rust
-use rig::message::Message;
+use rig::completion::Message;
 
 // Constructors
 Message::user("Hello!");                    // user turn
@@ -112,33 +109,40 @@ Message::system("You are helpful.");        // system message (rare — use prea
 ### Manual History with `.chat()`
 
 ```rust
-use rig::client::{CompletionClient, ProviderClient};
-use rig::message::Message;
+use rig::client::CompletionClient;
+use rig::completion::Chat;
+use rig::completion::Message;
 use rig::providers::openai;
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a helpful assistant.")
     .build();
 
 let mut history: Vec<Message> = Vec::new();
 
-// Turn 1 — history starts empty; chat() appends [user("My name..."), assistant(r1)]
+// Turn 1 — pass history by reference (borrows, does not consume or mutate it)
 let q1 = "My name is Alice.";
-let r1 = agent.chat(q1, &mut history).await?;
+let r1 = agent.chat(q1, &history).await?;
+
+// Append this exchange manually — chat() does NOT mutate history
+history.push(Message::user(q1));
+history.push(Message::assistant(r1.as_str()));
 
 // Turn 2 — history now contains the previous exchange; agent knows Alice's name
 let q2 = "What's my name?";
-let r2 = agent.chat(q2, &mut history).await?;
+let r2 = agent.chat(q2, &history).await?;
+history.push(Message::user(q2));
+history.push(Message::assistant(r2.as_str()));
 
 println!("{r2}"); // "Your name is Alice."
 ```
 
 Key points:
-- `.chat(prompt, &mut Vec<Message>)` — takes a mutable reference; rig-core 0.37 automatically appends both the user turn and the assistant response after each call
-- You no longer need to push messages manually — the mutation is handled inside `chat()`
+- `.chat(prompt, chat_history)` — takes `impl IntoIterator<Item: Into<Message>>`. Passing `&history` works because `&Vec<T>` implements `IntoIterator`.
+- `chat()` does **not** mutate history — you push `Message::user(prompt)` and `Message::assistant(reply)` yourself after each call
+- `Message::user(text)` and `Message::assistant(text)` accept `impl Into<String>`
 - History is held entirely in your application — rig makes no calls to store or retrieve it
-- This is the right pattern when: conversation scope is request-scoped, history is short, or you want full control
 
 ### When Manual History Is Appropriate
 
@@ -147,92 +151,92 @@ Manual history works well when:
 - History is held in a database and you query it before each call
 - You want to filter, truncate, or transform history before sending it
 
-The downside: you must manage appending, truncating, and persisting history yourself. For persistent stateful agents, rig provides managed memory.
-
 > **Java parallel:** Manual history is equivalent to building a `List<Message>` and passing it to Spring AI's `ChatClient.prompt().messages(history).call()`. LangChain4j's `UserMessage` / `AiMessage` types map directly to rig's `Message::user()` / `Message::assistant()`.
 
 ---
 
-## 6.4 Multi-Turn Conversations: Managed Memory
+## 6.4 Multi-Turn Conversations: Streaming with History
 
-For persistent agents that maintain conversation history across calls without manual tracking, rig provides the `memory()` builder option combined with per-prompt conversation scoping.
+For interactive applications, rig's streaming API provides a clean way to maintain history through the `FinalResponse` object returned at the end of a stream. The `FinalResponse::history()` method returns the updated message list — user turn + assistant response — ready to pass to the next call.
 
-### `InMemoryConversationMemory`
+### Streaming Multi-Turn Pattern
 
 ```rust
-use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::Prompt;
-use rig::memory::InMemoryConversationMemory;
+use anyhow::Result;
+use futures::StreamExt;
+use rig::agent::MultiTurnStreamItem;
+use rig::client::CompletionClient;
+use rig::completion::Message;
 use rig::providers::openai;
+use rig::streaming::StreamingChat;
 
-// Build memory store (lives for the duration of the program)
-let memory = InMemoryConversationMemory::new();
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
 
-// Attach memory to the agent at build time
-let agent = openai::Client::from_env()?
-    .agent(openai::GPT_4O_MINI)
-    .preamble("You are a helpful assistant with persistent memory.")
-    .memory(memory)
-    .build();
+    let agent = openai::Client::from_env()
+        .agent(openai::GPT_4O_MINI)
+        .preamble("You are a helpful assistant.")
+        .build();
+
+    let mut history: Vec<Message> = Vec::new();
+
+    // Turn 1
+    let mut stream = agent.stream_chat("My name is Alice.", &history).await;
+    while let Some(item) = stream.next().await {
+        match item? {
+            MultiTurnStreamItem::FinalResponse(fin) => {
+                // extend history with [user("My name is Alice."), assistant(reply)]
+                history.extend_from_slice(fin.history().unwrap_or_default());
+            }
+            _ => {}
+        }
+    }
+
+    // Turn 2 — history contains the previous exchange
+    let mut stream = agent.stream_chat("What's my name?", &history).await;
+    while let Some(item) = stream.next().await {
+        match item? {
+            MultiTurnStreamItem::FinalResponse(fin) => {
+                history.extend_from_slice(fin.history().unwrap_or_default());
+                // Print the reply from history
+                if let Some(last) = fin.history().and_then(|h| h.last()) {
+                    println!("{last:?}"); // "Your name is Alice."
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
 ```
 
-Once `.memory()` is set, use `.conversation(id)` on each prompt to scope history:
+The `fin.history()` slice contains the messages added this turn — append them to your `Vec<Message>` for the next call.
+
+### Non-Streaming Multi-Turn Pattern
+
+When using `.chat()` (non-streaming), there is no `FinalResponse` — push user and assistant messages manually as shown in §6.3:
 
 ```rust
-// A conversation identified by "user-42"
-let r1 = agent
-    .prompt("My name is Alice.")
-    .conversation("user-42")
-    .await?;
-
-let r2 = agent
-    .prompt("What's my name?")
-    .conversation("user-42")
-    .await?;
-
-println!("{r2}"); // "Your name is Alice."
+let q = "What is ownership?";
+let reply = agent.chat(q, &history).await?;
+history.push(Message::user(q));
+history.push(Message::assistant(reply.as_str()));
 ```
 
-The conversation ID scopes history — `"user-42"` and `"user-99"` have completely independent conversation histories. This means one `Agent` instance can serve many concurrent users without cross-contamination.
+### History Storage Strategies
 
-```rust
-// Two users, isolated histories, same agent
-let alice_r = agent.prompt("My name is Alice.").conversation("user-42").await?;
-let bob_r   = agent.prompt("My name is Bob.").conversation("user-99").await?;
+| Approach | Where history lives | Good for |
+|---|---|---|
+| `Vec<Message>` in function | Stack / local scope | Single session, request-scoped handlers |
+| `Arc<Mutex<Vec<Message>>>` | Shared heap | Multi-threaded server, one entry per session ID |
+| Database (SQLite, Postgres) | External storage | Production agents, persistence across restarts |
+| Redis `LPUSH/LRANGE` | External cache | Distributed services, TTL-based expiry |
 
-// Alice's history does not contain Bob's messages
-let alice_q = agent.prompt("What's my name?").conversation("user-42").await?;
-// → "Your name is Alice."
-```
+For production, store history keyed by session ID in a database or Redis. Load it before each call, pass it to `.chat()` or `.stream_chat()`, then persist the updated history. Chapter 10 covers memory management strategies — window sizing, token budgets, and compaction — in depth.
 
-### Constraint: `.conversation()` Requires `.memory()`
-
-`.conversation(id)` is only valid on a prompt when the agent was built with `.memory(...)`. Without it, `.conversation()` has no effect — the agent has nowhere to store or retrieve history. Build the agent with `.memory()` first.
-
-### `InMemoryConversationMemory` Limitations
-
-`InMemoryConversationMemory` stores all history in process memory (a `HashMap` behind a `Mutex`). This means:
-- **Not persistent** — history is lost on process restart
-- **Not distributed** — not shared across multiple service instances
-- **Unbounded** — long conversations grow indefinitely
-
-For production use, the `rig-memory` companion crate adds:
-- `SlidingWindowMemory` — retains the N most recent messages
-- `TokenWindowMemory` — keeps messages within a token budget
-- `CompactingMemory` — summarizes evicted messages into a condensed artifact
-
-These are covered in Chapter 10 (Memory and State).
-
-> **Java parallel:** `InMemoryConversationMemory` maps to Spring AI's `InMemoryChatMemory` backend, combined with `MessageChatMemoryAdvisor`:
-> ```java
-> ChatMemory chatMemory = new InMemoryChatMemory();
-> ChatClient chatClient = ChatClient.builder(chatModel)
->     .defaultAdvisors(
->         MessageChatMemoryAdvisor.builder(chatMemory).build()
->     )
->     .build();
-> ```
-> In LangChain4j, the equivalent is `MessageWindowChatMemory` + `AiServices`.
+> **Java parallel:** This matches Spring AI's `InMemoryChatMemory` with `MessageChatMemoryAdvisor` for prototype work, and a Redis- or JDBC-backed `ChatMemory` for production. The explicit `Vec<Message>` approach maps directly to LangChain4j's `MessageWindowChatMemory.messages()` — you manage the list, the framework just sends it.
 
 ---
 
@@ -252,7 +256,7 @@ You are a customer support agent for TechCorp. \
 \n- If you cannot resolve the issue, offer to connect them with a human agent.\
 \n\nYou do not have access to order management systems in this session.";
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble(SUPPORT_PREAMBLE)
     .build();
@@ -269,7 +273,7 @@ Tips:
 Use `.context()` for static background information that should be available on every call without being part of the conversation history:
 
 ```rust
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a TechCorp support agent.")
     .context("TechCorp products: RustBot (IDE plugin), DataFlow (ETL tool), CloudSync (backup service).")
@@ -332,7 +336,7 @@ struct SafetyVerdict {
     reason: Option<String>,
 }
 
-let moderator = openai::Client::from_env()?
+let moderator = openai::Client::from_env()
     .extractor::<SafetyVerdict>(openai::GPT_4O_MINI)
     .preamble(
         "Classify whether the following text is safe to show to a customer support user. \
@@ -372,7 +376,7 @@ use rig::client::{CompletionClient, ProviderClient};
 use rig::streaming::StreamingChat;
 use rig::providers::openai;
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a helpful assistant.")
     .build();
@@ -396,7 +400,7 @@ println!("{response}");
 ### `stream_chat()` — Streaming with History
 
 ```rust
-use rig::message::Message;
+use rig::completion::Message;
 
 let history = vec![
     Message::user("What programming language should I learn first?"),
@@ -430,15 +434,14 @@ The pattern above (collecting only `FinalResponse`) is the safe baseline. For to
 
 ## 6.8 Hands-On: Customer Support Agent
 
-The complete runnable example demonstrates both history patterns:
+The complete runnable example demonstrates the manual history pattern:
 
 ```rust
 // code-examples/ch06-agents/src/main.rs
 use anyhow::Result;
-use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::Prompt;
-use rig::memory::InMemoryConversationMemory;
-use rig::message::Message;
+use rig::client::CompletionClient;
+use rig::completion::{Chat, Prompt};
+use rig::completion::Message;
 use rig::providers::openai;
 
 const PREAMBLE: &str = "\
@@ -449,7 +452,7 @@ Always be professional and empathetic. \
 If a customer reports a billing issue, tell them you will escalate to the billing team. \
 Never invent information about products you do not know about.";
 
-// Pattern 1: manual Vec<Message> history with .chat()
+// Manual Vec<Message> history — push user/assistant turns yourself after each call
 async fn demo_manual_history(client: &openai::Client) -> Result<()> {
     println!("=== Manual History ===\n");
     let agent = client
@@ -461,51 +464,41 @@ async fn demo_manual_history(client: &openai::Client) -> Result<()> {
 
     let q1 = "Hi, I'm having trouble logging into my account.";
     println!("User: {q1}");
-    let r1 = agent.chat(q1, &mut history).await?;
+    let r1 = agent.chat(q1, &history).await?;
     println!("Agent: {r1}\n");
-    // history now has [user(q1), assistant(r1)] — appended automatically
+    history.push(Message::user(q1));
+    history.push(Message::assistant(r1.as_str()));
 
     let q2 = "I've already tried resetting my password twice.";
     println!("User: {q2}");
-    let r2 = agent.chat(q2, &mut history).await?;
+    let r2 = agent.chat(q2, &history).await?;
     println!("Agent: {r2}\n");
 
     Ok(())
 }
 
-// Pattern 2: rig-managed memory with .memory() + .conversation(id)
-async fn demo_managed_memory(client: &openai::Client) -> Result<()> {
-    println!("=== Managed Memory ===\n");
-    let memory = InMemoryConversationMemory::new();
+async fn demo_prompt(client: &openai::Client) -> Result<()> {
+    println!("=== Single-Shot Prompt ===\n");
     let agent = client
         .agent(openai::GPT_4O_MINI)
         .preamble(PREAMBLE)
-        .memory(memory)
         .build();
 
-    let conv_id = "user-42";
-
-    let r1 = agent
-        .prompt("I ordered a laptop last week but it hasn't arrived.")
-        .conversation(conv_id)
+    let response = agent
+        .prompt("What is your return policy for laptops?")
         .await?;
-    println!("Turn 1: {r1}\n");
-
-    let r2 = agent
-        .prompt("The order number is ORD-88291.")
-        .conversation(conv_id)
-        .await?;
-    println!("Turn 2: {r2}\n");
-
+    println!("Response: {response}\n");
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
-    let client = openai::Client::from_env()?;
+    tracing_subscriber::fmt::init();
+    let client = openai::Client::from_env();
     demo_manual_history(&client).await?;
-    demo_managed_memory(&client).await?;
+    println!("---\n");
+    demo_prompt(&client).await?;
     Ok(())
 }
 ```
@@ -520,30 +513,30 @@ cargo run -p ch06-agents
 
 ---
 
-## 6.9 Choosing Between the Two History Patterns
+## 6.9 Choosing a History Storage Pattern
 
-| | Manual `Vec<Message>` + `.chat()` | Managed `.memory()` + `.conversation(id)` |
+Rig's `Agent` does not manage conversation history for you — it sends whatever history you pass in and returns a response. Persistence is your responsibility. The choice is which data structure to use:
+
+| Pattern | Where history lives | Good for |
 |---|---|---|
-| **Who stores history** | Your code | rig (`InMemoryConversationMemory`) |
-| **Persistence** | You control (DB, Redis, etc.) | In-process only — lost on restart |
-| **Multi-instance** | Works if you load from shared storage | Not distributed |
-| **History filtering** | Full control — truncate, transform, filter | Requires `rig-memory` policies |
-| **Best for** | Stateless services, DB-backed history | Single-process prototypes, dev tools |
-| **Conversation scoping** | Implicit (your Vec per session) | Explicit `conversation_id` string |
+| `Vec<Message>` in local scope | Stack | Single-session CLI tools, tests |
+| `Arc<Mutex<Vec<Message>>>` | Shared heap (keyed by session ID) | In-process multi-user servers |
+| SQLite / Postgres | External storage | Production agents needing persistence |
+| Redis | External cache with TTL | Distributed services, session expiry |
 
-In production: load history from a database before each call and use `.chat()`. `InMemoryConversationMemory` is the right tool for prototypes and single-process services.
+The API is the same in every case: before each call, load or build your `Vec<Message>`, pass `&history` to `.chat()` or `.stream_chat()`, then persist the new messages after. Chapter 10 covers window truncation and token budget strategies for keeping histories within model context limits.
 
 ---
 
 ## Key Takeaways
 
-- `Agent<M>` wraps a completion model with a preamble, context, tools, and optional memory. Build one with `client.agent(model).preamble(...).build()`.
-- Two required imports: `rig::client::CompletionClient` (for `.agent()`), `rig::client::ProviderClient` (for client construction), `rig::completion::Prompt` (for `.prompt()`).
-- **Manual history**: maintain a `Vec<Message>` yourself, pass it to `.chat(prompt, &history)`. You append user/assistant turns after each exchange.
-- **Managed memory**: build with `.memory(InMemoryConversationMemory::new())`, then scope each prompt with `.conversation(id)`. The ID isolates history per-user. Requires `.memory()` to be set — `.conversation()` has no effect without it.
-- `Message::user(str)` and `Message::assistant(str)` are the constructors for history entries.
+- `Agent<M>` wraps a completion model with a preamble, context, and tools. Build one with `client.agent(model).preamble(...).build()`.
+- Required imports: `rig::client::CompletionClient` (for `.agent()`), `rig::completion::Chat` (for `.chat()`), `rig::completion::Prompt` (for `.prompt()`).
+- **History management is your responsibility** — rig provides no automatic conversation store. Maintain a `Vec<Message>`, pass `&history` to `.chat()`, then push `Message::user(q)` and `Message::assistant(reply)` after each call.
+- `Message::user(text)` and `Message::assistant(text)` accept `impl Into<String>`.
+- **Streaming history**: use `stream_chat()` and call `fin.history()` on the `FinalResponse` to get the appended messages for that turn — `history.extend_from_slice(fin.history().unwrap_or_default())`.
 - Guardrails are manual: validate input before calling the agent; use an `Extractor<SafetyVerdict>` to classify output before returning it.
-- Streaming: `agent.stream_prompt(text).await` or `agent.stream_chat(text, &history).await` — iterate with `StreamExt::next()`, match `MultiTurnStreamItem::FinalResponse` for the complete response or `StreamAssistantItem` for incremental chunks.
+- Streaming: `agent.stream_chat(text, &history)` — iterate with `StreamExt::next()`, match `MultiTurnStreamItem::FinalResponse` for the complete response or `StreamAssistantItem` for incremental chunks.
 
 ---
 
@@ -551,7 +544,7 @@ In production: load history from a database before each call and use `.chat()`. 
 
 - [rig-core Agent docs](https://docs.rs/rig-core/latest/rig/agent/index.html) — `Agent`, `AgentBuilder`, `PromptRequest`
 - [rig-core Message docs](https://docs.rs/rig-core/latest/rig/message/index.html) — `Message` enum and constructors
-- [rig-core memory docs](https://docs.rs/rig-core/latest/rig/memory/index.html) — `InMemoryConversationMemory`
+- [rig-core streaming docs](https://docs.rs/rig-core/latest/rig/streaming/index.html) — `StreamingChat`, `FinalResponse::history()`
 - [Spring AI ChatClient advisors](https://docs.spring.io/spring-ai/reference/api/advisors.html) — Java reference: `MessageChatMemoryAdvisor`
 - [LangChain4j ChatMemory](https://docs.langchain4j.dev/tutorials/chat-memory) — Java reference: `MessageWindowChatMemory`
 

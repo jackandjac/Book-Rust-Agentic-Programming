@@ -332,8 +332,7 @@ Registering with an agent:
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    // Note: from_env() returns Result — unwrap with ?
-    let agent = openai::Client::from_env()?
+    let agent = openai::Client::from_env()
         .agent(openai::GPT_4O)
         .preamble("You are a calculator. Use the tools before answering.")
         .tool(Add)
@@ -374,7 +373,7 @@ use rig_derive::rig_tool;
     description = "Get the current weather for a named city",
     params(city = "The city name, e.g. 'London' or 'Tokyo'")
 )]
-async fn get_weather(city: String) -> Result<String, ToolError> {
+fn get_weather(city: String) -> Result<String, ToolError> {
     Ok(format!("The weather in {city} is 15°C and partly cloudy."))
 }
 ```
@@ -417,7 +416,7 @@ async fn get_weather(city: String) -> Result<String, ToolError> {
 }
 ```
 
-The concepts map directly: annotation → attribute macro, `@P` → `params()` entry, return type → `Result<String, ToolError>`. The Rust version is `async` (all tool calls involve I/O in practice), and errors are explicit in the return type.
+The concepts map directly: annotation → attribute macro, `@P` → `params()` entry, return type → `Result<String, ToolError>`. Errors are explicit in the return type. Use `async fn` only when the tool body itself makes I/O calls; pure-computation tools use `fn`.
 
 ---
 
@@ -435,7 +434,7 @@ use rig::providers::openai;
     params(city = "The city name, e.g. 'London'"),
     required(city)
 )]
-async fn get_weather(city: String) -> Result<String, ToolError> {
+fn get_weather(city: String) -> Result<String, ToolError> {
     // Stub — replace with an HTTP call to a weather API
     match city.to_lowercase().as_str() {
         "london" => Ok("London: 12°C, overcast".to_string()),
@@ -454,7 +453,7 @@ async fn get_weather(city: String) -> Result<String, ToolError> {
     ),
     required(value, from, to)
 )]
-async fn convert_temperature(
+fn convert_temperature(
     value: f64,
     from: String,
     to: String,
@@ -463,14 +462,18 @@ async fn convert_temperature(
         "C" => value,
         "F" => (value - 32.0) * 5.0 / 9.0,
         "K" => value - 273.15,
-        other => return Err(ToolError::new(format!("Unknown unit '{other}'"))),
+        other => return Err(ToolError::ToolCallError(
+            format!("Unknown source unit '{other}'. Use C, F, or K.").into()
+        )),
     };
 
     let result = match to.to_uppercase().as_str() {
         "C" => celsius,
         "F" => celsius * 9.0 / 5.0 + 32.0,
         "K" => celsius + 273.15,
-        other => return Err(ToolError::new(format!("Unknown unit '{other}'"))),
+        other => return Err(ToolError::ToolCallError(
+            format!("Unknown target unit '{other}'. Use C, F, or K.").into()
+        )),
     };
 
     Ok(format!("{value}°{from} = {result:.1}°{to}"))
@@ -480,7 +483,7 @@ async fn convert_temperature(
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    let agent = openai::Client::from_env()?
+    let agent = openai::Client::from_env()
         .agent(openai::GPT_4O)
         .preamble(
             "You are a helpful assistant with weather data and a temperature converter. \
@@ -519,16 +522,16 @@ use rig::tool::ToolError;
     params(ticker = "Stock ticker symbol, e.g. 'AAPL' or 'GOOGL'"),
     required(ticker)
 )]
-async fn get_stock_price(ticker: String) -> Result<String, ToolError> {
+fn get_stock_price(ticker: String) -> Result<String, ToolError> {
     // Validate — tickers are 1-5 uppercase ASCII letters
     let ticker = ticker.trim().to_uppercase();
     if ticker.is_empty()
         || ticker.len() > 5
         || !ticker.chars().all(|c| c.is_ascii_alphabetic())
     {
-        return Err(ToolError::new(format!(
+        return Err(ToolError::ToolCallError(format!(
             "Invalid ticker '{}'. Expected 1-5 letters (e.g. 'AAPL')", ticker
-        )));
+        ).into()));
     }
 
     // Proceed with validated, normalized input
@@ -597,7 +600,7 @@ Register stateful tools the same way:
 ```rust
 let weather_tool = WeatherApiTool::new(std::env::var("WEATHER_API_KEY")?);
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O)
     .tool(weather_tool)
     .build();
@@ -625,7 +628,7 @@ use rig_derive::rig_tool;
     params(city = "The city name, e.g. 'London' or 'New York'"),
     required(city)
 )]
-async fn get_weather(city: String) -> Result<String, ToolError> {
+fn get_weather(city: String) -> Result<String, ToolError> {
     // Stub: replace with a real weather API call
     match city.to_lowercase().as_str() {
         "london" => Ok("London: 12°C, overcast".to_string()),
@@ -644,7 +647,7 @@ async fn get_weather(city: String) -> Result<String, ToolError> {
     ),
     required(value, from, to)
 )]
-async fn convert_temperature(
+fn convert_temperature(
     value: f64,
     from: String,
     to: String,
@@ -653,18 +656,18 @@ async fn convert_temperature(
         "C" => value,
         "F" => (value - 32.0) * 5.0 / 9.0,
         "K" => value - 273.15,
-        other => return Err(ToolError::new(format!(
-            "Unknown source unit '{other}'. Use C, F, or K."
-        ))),
+        other => return Err(ToolError::ToolCallError(
+            format!("Unknown source unit '{other}'. Use C, F, or K.").into()
+        )),
     };
 
     let result = match to.to_uppercase().as_str() {
         "C" => celsius,
         "F" => celsius * 9.0 / 5.0 + 32.0,
         "K" => celsius + 273.15,
-        other => return Err(ToolError::new(format!(
-            "Unknown target unit '{other}'. Use C, F, or K."
-        ))),
+        other => return Err(ToolError::ToolCallError(
+            format!("Unknown target unit '{other}'. Use C, F, or K.").into()
+        )),
     };
 
     Ok(format!("{value}°{from} = {result:.1}°{to}"))
@@ -675,7 +678,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let agent = openai::Client::from_env()?
+    let agent = openai::Client::from_env()
         .agent(openai::GPT_4O)
         .preamble(
             "You are a helpful assistant with weather data and a temperature converter. \

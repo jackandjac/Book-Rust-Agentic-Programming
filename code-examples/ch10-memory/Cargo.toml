@@ -13,4 +13,3 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
 rig-core = { workspace = true }
-rig-memory = { workspace = true }

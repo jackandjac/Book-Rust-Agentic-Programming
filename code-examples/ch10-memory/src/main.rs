@@ -5,17 +5,17 @@
 // Requires: OPENAI_API_KEY env var (or .env file)
 //
 // Demonstrates three memory patterns:
-//   1. Manual history — Vec<Message> + Agent::chat(&mut history)
-//   2. Managed memory — InMemoryConversationMemory + .conversation(id)
-//   3. Sliding-window policy — rig-memory SlidingWindowMemory limits history size
+//   1. Manual Vec<Message> — push user + assistant turns after each call
+//   2. In-process HashMap — lightweight multi-session store with no external deps
+//   3. Sliding-window truncation — keep only the last N messages per session
 
 use anyhow::Result;
 use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::Prompt;
-use rig::memory::InMemoryConversationMemory;
-use rig::message::Message;
+use rig::completion::{Chat, Prompt};
+use rig::completion::Message;
 use rig::providers::openai;
-use rig_memory::{InMemoryConversationMemory as PolicyMemoryStore, SlidingWindowMemory};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 const PREAMBLE: &str = "\
 You are a helpful personal assistant with a good memory. \
@@ -26,9 +26,8 @@ Keep answers concise — one to three sentences.";
 
 /// Demonstrates manual history management.
 ///
-/// `Agent::chat(prompt, &mut Vec<Message>)` in rig-core 0.37 automatically
-/// appends both the user turn and the assistant response after each call.
-/// You pass in the full accumulated history on every turn.
+/// `Agent::chat(prompt, &history)` takes an immutable borrow of history.
+/// After each call, push user + assistant turns manually.
 async fn demo_manual_history(client: &openai::Client) -> Result<()> {
     println!("━━━ Pattern 1: Manual Vec<Message> history ━━━\n");
 
@@ -37,143 +36,163 @@ async fn demo_manual_history(client: &openai::Client) -> Result<()> {
         .preamble(PREAMBLE)
         .build();
 
-    // Start with an empty history — no prior context.
     let mut history: Vec<Message> = Vec::new();
 
-    // Turn 1 — agent sees no prior messages
+    // Turn 1
     let q1 = "My name is Alice and I'm learning Rust.";
     println!("User:  {q1}");
-    let r1 = agent.chat(q1, &mut history).await?;
+    let r1 = agent.chat(q1, &history).await?;
     println!("Agent: {r1}\n");
-    // history now contains: [User("My name is Alice..."), Assistant(r1)]
+    history.push(Message::user(q1));
+    history.push(Message::assistant(r1.as_str()));
 
-    // Turn 2 — agent sees the previous exchange; knows the user's name
+    // Turn 2 — agent sees the previous exchange
     let q2 = "What topic am I studying?";
     println!("User:  {q2}");
-    let r2 = agent.chat(q2, &mut history).await?;
+    let r2 = agent.chat(q2, &history).await?;
     println!("Agent: {r2}\n");
-    // history now contains 4 messages
+    history.push(Message::user(q2));
+    history.push(Message::assistant(r2.as_str()));
 
-    // Turn 3 — demonstrate that history is growing
+    // Turn 3
     let q3 = "What's my name again?";
     println!("User:  {q3}");
-    let r3 = agent.chat(q3, &mut history).await?;
+    let r3 = agent.chat(q3, &history).await?;
     println!("Agent: {r3}");
+    history.push(Message::user(q3));
+    history.push(Message::assistant(r3.as_str()));
     println!("(history length: {} messages)\n", history.len());
 
     Ok(())
 }
 
-// ── Pattern 2: Managed memory with InMemoryConversationMemory ────────────────
+// ── Pattern 2: In-process session store ──────────────────────────────────────
 
-/// Demonstrates rig-managed memory.
+/// A lightweight in-process store keyed by session ID.
 ///
-/// `InMemoryConversationMemory` stores per-conversation history in a HashMap.
-/// The agent loads history before processing and appends after responding —
-/// the caller just provides a `conversation_id` string per request.
-async fn demo_managed_memory(client: &openai::Client) -> Result<()> {
-    println!("━━━ Pattern 2: InMemoryConversationMemory ━━━\n");
+/// This is the simplest way to serve multiple concurrent users from one process
+/// without any external dependency. History is lost on restart.
+struct SessionStore {
+    sessions: Mutex<HashMap<String, Vec<Message>>>,
+}
 
-    // Create the in-memory backend and attach it to the agent at build time.
-    let memory = InMemoryConversationMemory::new();
+impl SessionStore {
+    fn new() -> Self {
+        Self { sessions: Mutex::new(HashMap::new()) }
+    }
+
+    fn load(&self, id: &str) -> Vec<Message> {
+        self.sessions.lock().unwrap()
+            .get(id).cloned().unwrap_or_default()
+    }
+
+    fn save(&self, id: &str, history: Vec<Message>) {
+        self.sessions.lock().unwrap().insert(id.to_string(), history);
+    }
+}
+
+// Agent<M>: Chat when M: CompletionModel + 'static (from rig-core impl).
+// Using a type-erased reference keeps the calling code simple.
+async fn send_with_session<M: rig::completion::CompletionModel + 'static>(
+    agent: &rig::agent::Agent<M>,
+    store: &SessionStore,
+    session_id: &str,
+    prompt: &str,
+) -> Result<String> {
+    let history = store.load(session_id);
+    let reply = agent.chat(prompt, &history).await?;
+
+    let mut updated = history;
+    updated.push(Message::user(prompt));
+    updated.push(Message::assistant(reply.as_str()));
+    store.save(session_id, updated);
+
+    Ok(reply)
+}
+
+async fn demo_session_store(client: &openai::Client) -> Result<()> {
+    println!("━━━ Pattern 2: In-process session store ━━━\n");
 
     let agent = client
         .agent(openai::GPT_4O_MINI)
         .preamble(PREAMBLE)
-        .memory(memory)
         .build();
 
-    // Two separate conversations on the same agent instance.
-    // Each conversation_id is completely isolated.
-    let alice_id = "alice-session-1";
-    let bob_id = "bob-session-1";
+    let store = SessionStore::new();
 
     // Alice's conversation
-    let r1 = agent
-        .prompt("Hi! I'm Alice. I prefer short answers.")
-        .conversation(alice_id)
-        .await?;
+    let r1 = send_with_session(&agent, &store, "alice", "Hi! I'm Alice. I prefer short answers.").await?;
     println!("[Alice] Turn 1: {r1}\n");
 
-    // Bob's conversation — agent has no knowledge of Alice's session
-    let r2 = agent
-        .prompt("Hello! My favourite language is Haskell.")
-        .conversation(bob_id)
-        .await?;
+    // Bob's conversation — completely isolated
+    let r2 = send_with_session(&agent, &store, "bob", "Hello! My favourite language is Haskell.").await?;
     println!("[Bob]   Turn 1: {r2}\n");
 
-    // Alice's second turn — agent remembers she prefers short answers
-    let r3 = agent
-        .prompt("Can you recommend a Rust book?")
-        .conversation(alice_id)
-        .await?;
+    // Alice's second turn — agent remembers her preference
+    let r3 = send_with_session(&agent, &store, "alice", "Can you recommend a Rust book?").await?;
     println!("[Alice] Turn 2: {r3}\n");
 
-    // Bob's second turn — agent remembers his language preference
-    let r4 = agent
-        .prompt("Does Rust feel similar to my favourite language?")
-        .conversation(bob_id)
-        .await?;
+    // Bob's second turn — agent remembers Haskell
+    let r4 = send_with_session(&agent, &store, "bob", "Does Rust feel similar to my favourite language?").await?;
     println!("[Bob]   Turn 2: {r4}\n");
 
     Ok(())
 }
 
-// ── Pattern 3: Sliding-window policy via rig-memory ──────────────────────────
+// ── Pattern 3: Sliding-window truncation ─────────────────────────────────────
 
-/// Demonstrates bounded history with SlidingWindowMemory.
+/// Keep only the most recent `n` messages from history.
 ///
-/// Without a window policy, history grows unboundedly, eventually exceeding the
-/// model's context window. `SlidingWindowMemory::new(n)` keeps only the most
-/// recent `n` messages, discarding older ones as new turns arrive.
-///
-/// This uses `rig_memory::InMemoryConversationMemory` (from the `rig-memory`
-/// crate) which accepts a policy via `.with_filter()`. It is the same logical
-/// type as `rig::memory::InMemoryConversationMemory` but with policy support.
+/// This prevents unbounded growth. Older messages are silently dropped.
+/// Use when you want a simple, no-dependency guard against context overflow.
+fn sliding_window(history: &[Message], max_messages: usize) -> Vec<Message> {
+    if history.len() <= max_messages {
+        history.to_vec()
+    } else {
+        history[history.len() - max_messages..].to_vec()
+    }
+}
+
 async fn demo_sliding_window(client: &openai::Client) -> Result<()> {
     println!("━━━ Pattern 3: Sliding-window (last 4 messages) ━━━\n");
-
-    // Keep at most 4 messages in the active window (2 turns).
-    // Older messages are silently dropped when the window fills.
-    let memory = PolicyMemoryStore::new()
-        .with_filter(SlidingWindowMemory::new(4));
 
     let agent = client
         .agent(openai::GPT_4O_MINI)
         .preamble(PREAMBLE)
-        .memory(memory)
         .build();
 
-    let conv = "sliding-demo";
+    let mut history: Vec<Message> = Vec::new();
+    const WINDOW: usize = 4; // keep last 4 messages = 2 turns
 
-    // Establish a fact early in the conversation.
-    let _ = agent
-        .prompt("I'm working on a project called Titan.")
-        .conversation(conv)
-        .await?;
-    println!("Turn 1: established project name 'Titan'\n");
+    // Turn 1 — establish a fact
+    let q1 = "I'm working on a project called Titan.";
+    let r1 = agent.chat(q1, &sliding_window(&history, WINDOW)).await?;
+    history.push(Message::user(q1));
+    history.push(Message::assistant(r1.as_str()));
+    println!("Turn 1: established project name 'Titan' (history: {} msgs)\n", history.len());
 
-    // Add more turns to push the first message out of the window.
-    let _ = agent
-        .prompt("The project uses PostgreSQL for storage.")
-        .conversation(conv)
-        .await?;
-    println!("Turn 2: added storage detail\n");
+    // Turn 2
+    let q2 = "The project uses PostgreSQL for storage.";
+    let r2 = agent.chat(q2, &sliding_window(&history, WINDOW)).await?;
+    history.push(Message::user(q2));
+    history.push(Message::assistant(r2.as_str()));
+    println!("Turn 2: added storage detail (history: {} msgs)\n", history.len());
 
-    let _ = agent
-        .prompt("We're deploying to Kubernetes.")
-        .conversation(conv)
-        .await?;
-    println!("Turn 3: added deployment detail (window now at 4 messages)\n");
+    // Turn 3 — window is now full; Turn 1 will be excluded from next call
+    let q3 = "We're deploying to Kubernetes.";
+    let r3 = agent.chat(q3, &sliding_window(&history, WINDOW)).await?;
+    history.push(Message::user(q3));
+    history.push(Message::assistant(r3.as_str()));
+    println!("Turn 3: added deployment detail (history: {} msgs, window passes last {})\n",
+        history.len(), WINDOW);
 
-    // By now Turn 1 has been evicted from the window (window = 4 messages = 2 turns).
-    // The agent should NOT know the project name anymore.
-    let r = agent
-        .prompt("What is the name of my project?")
-        .conversation(conv)
-        .await?;
-    println!("Turn 4 (project name query): {r}");
-    println!("(Expected: agent cannot recall 'Titan' — it was evicted from the window)\n");
+    // Turn 4 — window excludes Turn 1 ("Titan"); agent should not recall it
+    let q4 = "What is the name of my project?";
+    let windowed = sliding_window(&history, WINDOW);
+    println!("(Sending {} messages to model — Turn 1 excluded)", windowed.len());
+    let r4 = agent.chat(q4, &windowed).await?;
+    println!("Turn 4 (project name query): {r4}");
+    println!("(Expected: agent cannot recall 'Titan' — it was outside the window)\n");
 
     Ok(())
 }
@@ -185,11 +204,11 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
 
     demo_manual_history(&client).await?;
     println!("────────────────────────────────────────────────\n");
-    demo_managed_memory(&client).await?;
+    demo_session_store(&client).await?;
     println!("────────────────────────────────────────────────\n");
     demo_sliding_window(&client).await?;
 

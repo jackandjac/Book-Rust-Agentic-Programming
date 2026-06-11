@@ -198,7 +198,7 @@ use rig::completion::CompletionRequestBuilder;
 let model = client.completion_model(openai::GPT_4O_MINI);
 // Use the builder — avoids depending on CompletionRequest's private struct fields
 let request = CompletionRequestBuilder::new(
-    rig::message::Message::user("What is the capital of France?"),
+    rig::completion::Message::user("What is the capital of France?"),
 )
 .build();
 

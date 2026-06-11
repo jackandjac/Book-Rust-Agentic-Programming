@@ -170,7 +170,7 @@ Every framework in this book is pre-1.0. That's not a reason to avoid Rust for p
 
 ### Risk: breaking changes between minor versions
 
-rig-core 0.37 introduced a breaking change in `Agent::chat()` (the signature changed from `impl IntoIterator` to `&mut Vec<Message>`). This is normal for pre-1.0 crates.
+Pre-1.0 crates can introduce breaking API changes between minor versions — for example, changes to method signatures or removal of features. This is normal for active pre-1.0 projects.
 
 **Mitigation:**
 - Pin exact versions in `Cargo.lock` and commit it

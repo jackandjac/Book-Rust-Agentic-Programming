@@ -5,6 +5,8 @@
 // Requires: OPENAI_API_KEY env var (or .env file)
 
 use anyhow::Result;
+use rig::client::{CompletionClient, ProviderClient};
+use rig::completion::Prompt;
 use rig::providers::openai;
 use rig::tool::ToolError;
 use rig_derive::rig_tool;
@@ -14,7 +16,7 @@ use rig_derive::rig_tool;
     params(city = "The city name, e.g. 'London' or 'New York'"),
     required(city)
 )]
-async fn get_weather(city: String) -> Result<String, ToolError> {
+fn get_weather(city: String) -> Result<String, ToolError> {
     // Stub: replace with a real weather API call
     // e.g. OpenWeatherMap: https://api.openweathermap.org/data/2.5/weather?q={city}
     match city.to_lowercase().as_str() {
@@ -34,15 +36,15 @@ async fn get_weather(city: String) -> Result<String, ToolError> {
     ),
     required(value, from, to)
 )]
-async fn convert_temperature(value: f64, from: String, to: String) -> Result<String, ToolError> {
+fn convert_temperature(value: f64, from: String, to: String) -> Result<String, ToolError> {
     let celsius = match from.to_uppercase().as_str() {
         "C" => value,
         "F" => (value - 32.0) * 5.0 / 9.0,
         "K" => value - 273.15,
         other => {
-            return Err(ToolError::new(format!(
-                "Unknown source unit '{other}'. Use C, F, or K."
-            )))
+            return Err(ToolError::ToolCallError(
+                format!("Unknown source unit '{other}'. Use C, F, or K.").into()
+            ))
         }
     };
 
@@ -51,9 +53,9 @@ async fn convert_temperature(value: f64, from: String, to: String) -> Result<Str
         "F" => celsius * 9.0 / 5.0 + 32.0,
         "K" => celsius + 273.15,
         other => {
-            return Err(ToolError::new(format!(
-                "Unknown target unit '{other}'. Use C, F, or K."
-            )))
+            return Err(ToolError::ToolCallError(
+                format!("Unknown target unit '{other}'. Use C, F, or K.").into()
+            ))
         }
     };
 
@@ -65,7 +67,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let agent = openai::Client::from_env()?
+    let agent = openai::Client::from_env()
         .agent(openai::GPT_4O)
         .preamble(
             "You are a helpful assistant with weather data and a temperature converter. \

@@ -1,9 +1,7 @@
 # Chapter 10: Memory and State in Rust Agents
 
 > **Framework versions in this chapter:**  
-> `rig-core = "0.37"` — memory module added in 0.37; `chat()` signature changed  
-> `rig-memory = "0.1"` — `SlidingWindowMemory`, `TokenWindowMemory` policies  
-> `tokio = "1"`, `anyhow = "1"`, `dotenvy = "0.15"`
+> `rig-core = "0.37"` · `tokio = "1"` · `anyhow = "1"` · `dotenvy = "0.15"`
 >
 > **Java reference:** LangChain4j `ChatMemory`, `MessageWindowChatMemory`, `TokenWindowChatMemory`; Spring AI `MessageChatMemoryAdvisor`, `InMemoryChatMemory`
 
@@ -13,11 +11,11 @@ An agent that cannot remember previous turns is not an assistant — it's a calc
 
 But memory is also a resource. LLMs have finite context windows. Every message in history costs tokens, and tokens cost money and latency. Unbounded memory eventually fails; bounded memory must evict something. Deciding *what* to evict, *when*, and *how* to compensate is one of the core design decisions in agent architecture.
 
-This chapter covers three memory patterns in rig-core 0.37:
+This chapter covers three memory patterns:
 
 1. **Manual `Vec<Message>`** — you manage history explicitly; most flexible, most code
-2. **`InMemoryConversationMemory`** — rig manages per-conversation history; less code, same process only
-3. **Policy-based history shaping** (`rig-memory`) — sliding window and token budget keep history bounded
+2. **In-process session store** — a `HashMap<String, Vec<Message>>` per session ID; zero dependencies, suitable for single-server services
+3. **Sliding-window truncation** — a small helper function that keeps only the last N messages, preventing unbounded growth
 
 ---
 
@@ -66,34 +64,40 @@ ChatClient client = ChatClient.builder(chatModel)
     .build();
 ```
 
-In rig 0.37, the three patterns below cover the same ground.
+In rig, the three patterns below cover the same ground.
 
 ---
 
 ## 10.2 Pattern 1 — Manual `Vec<Message>`
 
-The simplest pattern gives you total control: you hold a `Vec<Message>` and pass it to every `chat()` call.
+The simplest pattern gives you total control: hold a `Vec<Message>` and pass it to every `chat()` call.
 
 ```rust
-use rig::message::Message;
+use rig::client::{CompletionClient, ProviderClient};
+use rig::completion::Chat;
+use rig::completion::Message;
+use rig::providers::openai;
 
-let mut history: Vec<Message> = Vec::new();
-
-let agent = client
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a helpful assistant.")
     .build();
 
-// Turn 1 — history starts empty
-let r1 = agent.chat("My name is Alice.", &mut history).await?;
-// history = [User("My name is Alice."), Assistant(r1)]
+let mut history: Vec<Message> = Vec::new();
 
-// Turn 2 — history carries the previous exchange
-let r2 = agent.chat("What's my name?", &mut history).await?;
-// history = [User("My name..."), Assistant(r1), User("What's my name?"), Assistant(r2)]
+// Turn 1 — pass history by immutable reference; chat() does not mutate it
+let r1 = agent.chat("My name is Alice.", &history).await?;
+// Now push both turns manually
+history.push(Message::user("My name is Alice."));
+history.push(Message::assistant(r1.as_str()));
+
+// Turn 2 — history now carries the previous exchange
+let r2 = agent.chat("What's my name?", &history).await?;
+history.push(Message::user("What's my name?"));
+history.push(Message::assistant(r2.as_str()));
 ```
 
-**What changed in rig-core 0.37:** `chat()` now takes `&mut Vec<Message>` (not an immutable iterator). It appends both the user message and the assistant response automatically after each call. You no longer push messages manually.
+`chat()` accepts `impl IntoIterator<Item: Into<Message>>`. Passing `&history` works because `&Vec<T>` implements `IntoIterator`. The method does **not** mutate history — you push turns yourself.
 
 ### When to use manual history
 
@@ -106,7 +110,7 @@ let r2 = agent.chat("What's my name?", &mut history).await?;
 `Message` derives `serde::Serialize` and `serde::Deserialize`, so you can persist history trivially:
 
 ```rust
-use rig::message::Message;
+use rig::completion::Message;
 use std::fs;
 
 // Save after each turn
@@ -122,232 +126,190 @@ This is the foundation of simple persistence: write JSON to disk (or a `TEXT` co
 
 ---
 
-## 10.3 Pattern 2 — `InMemoryConversationMemory`
+## 10.3 Pattern 2 — In-Process Session Store
 
-Manual history is powerful but verbose. When all you need is "keep history for this conversation in process memory", rig-core 0.37 provides a built-in backend.
+When you need one agent to serve many concurrent users, wrapping a `HashMap<String, Vec<Message>>` in a `Mutex` gives you isolated per-session history with no external dependencies.
 
 ```rust
-use rig::memory::InMemoryConversationMemory;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use rig::completion::Message;
 
-let memory = InMemoryConversationMemory::new();
+struct SessionStore {
+    sessions: Mutex<HashMap<String, Vec<Message>>>,
+}
 
-let agent = client
-    .agent(openai::GPT_4O_MINI)
-    .preamble("You are a helpful assistant.")
-    .memory(memory)
-    .build();
+impl SessionStore {
+    fn new() -> Self {
+        Self { sessions: Mutex::new(HashMap::new()) }
+    }
 
-// Use .conversation(id) to scope history per user/session
-let r1 = agent
-    .prompt("Hi, I'm Alice.")
-    .conversation("alice-42")
-    .await?;
+    fn load(&self, id: &str) -> Vec<Message> {
+        self.sessions.lock().unwrap()
+            .get(id).cloned().unwrap_or_default()
+    }
 
-let r2 = agent
-    .prompt("What's my name?")
-    .conversation("alice-42")
-    .await?;
-// r2 correctly refers back to "Alice"
+    fn save(&self, id: &str, history: Vec<Message>) {
+        self.sessions.lock().unwrap().insert(id.to_string(), history);
+    }
+}
 ```
 
-The agent loads history for `"alice-42"` before processing, appends the new exchange, and stores it back — all transparently. Your code only specifies the conversation ID.
-
-### Multiple conversations on one agent
-
-The key advantage over manual history: a single agent instance handles many concurrent users, each with their own isolated history.
+Usage per request:
 
 ```rust
-// Two users, same agent, different conversation IDs
-let _ = agent.prompt("My favourite language is Haskell.").conversation("bob-1").await?;
-let _ = agent.prompt("I prefer Lisp.").conversation("carol-2").await?;
+// Agent<M>: Chat when M: CompletionModel + 'static.
+// A generic bound accepts any agent regardless of provider:
+async fn handle<M: rig::completion::CompletionModel + 'static>(
+    agent: &rig::agent::Agent<M>,
+    store: &SessionStore,
+    session_id: &str,
+    prompt: &str,
+) -> anyhow::Result<String> {
+    let history = store.load(session_id);
+    let reply = agent.chat(prompt, &history).await?;
 
-// Each user's history is completely isolated
-let r = agent.prompt("What's my favourite language?").conversation("bob-1").await?;
+    let mut updated = history;
+    updated.push(Message::user(prompt));
+    updated.push(Message::assistant(reply.as_str()));
+    store.save(session_id, updated);
+
+    Ok(reply)
+}
+```
+
+Two users with isolated histories on one agent:
+
+```rust
+let store = SessionStore::new();
+handle(&agent, &store, "alice", "My favourite language is Haskell.").await?;
+handle(&agent, &store, "bob",   "I prefer Lisp.").await?;
+
+let r = handle(&agent, &store, "alice", "What's my favourite language?").await?;
 // → "Your favourite language is Haskell."
-```
-
-This is what LangChain4j achieves with a separate `ChatMemory` instance per user. In rig, one `InMemoryConversationMemory` handles all users — the ID is the key.
-
-### Opting out of memory for a single request
-
-Sometimes you want a one-off question without polluting the conversation history:
-
-```rust
-let r = agent
-    .prompt("What year is it?")
-    .without_memory()  // not recorded; not loaded
-    .await?;
 ```
 
 ### Limitations
 
-`InMemoryConversationMemory` stores everything in a `HashMap` inside the process. It disappears when the process exits. For durability across restarts, you need a persistent backend — Section 10.5 covers the pattern.
+The `SessionStore` lives inside the process. It disappears on restart and is not shared across multiple service instances. For durability, use JSON-on-disk or SQLite (§10.7).
+
+> **Java parallel:** This pattern is equivalent to maintaining a `Map<String, ChatMemory>` in LangChain4j and looking up the right `ChatMemory` by session ID per request. Spring AI does the same with `InMemoryChatMemory` scoped by a conversation ID.
 
 ---
 
-## 10.4 The `ConversationMemory` Trait
+## 10.4 Custom Storage Backends
 
-Both `InMemoryConversationMemory` (rig-core) and any custom backend implement the `ConversationMemory` trait from `rig::memory`:
-
-```rust
-pub trait ConversationMemory: Send + Sync {
-    async fn load(&self, conversation_id: &str) -> Result<Vec<Message>>;
-    async fn append(&self, conversation_id: &str, messages: Vec<Message>) -> Result<()>;
-    async fn clear(&self, conversation_id: &str) -> Result<()>;
-}
-```
-
-This is the extension point for custom backends. A Redis-backed implementation:
+The `SessionStore` in §10.3 is an in-process pattern. For a Redis- or database-backed equivalent, define your own `load` / `save` abstraction. Rig doesn't provide a `ConversationMemory` trait — you implement the pattern yourself. Here is a Redis example that follows the same load-chat-push-save contract:
 
 ```rust
-use rig::memory::ConversationMemory;
-use rig::message::Message;
+// redis = "0.27" in Cargo.toml
+use redis::AsyncCommands;
+use rig::completion::Message;
 
-pub struct RedisMemory {
+pub struct RedisSessionStore {
     client: redis::Client,
     ttl_secs: usize,
 }
 
-impl ConversationMemory for RedisMemory {
-    async fn load(&self, id: &str) -> anyhow::Result<Vec<Message>> {
-        let mut conn = self.client.get_async_connection().await?;
-        let raw: Option<String> = redis::cmd("GET").arg(id).query_async(&mut conn).await?;
+impl RedisSessionStore {
+    pub async fn load(&self, id: &str) -> anyhow::Result<Vec<Message>> {
+        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let raw: Option<String> = conn.get(id).await?;
         match raw {
             Some(json) => Ok(serde_json::from_str(&json)?),
             None => Ok(Vec::new()),
         }
     }
 
-    async fn append(&self, id: &str, messages: Vec<Message>) -> anyhow::Result<()> {
-        let mut conn = self.client.get_async_connection().await?;
-        // Load, merge, save
-        let mut history = self.load(id).await?;
-        history.extend(messages);
-        let json = serde_json::to_string(&history)?;
-        redis::cmd("SETEX")
-            .arg(id).arg(self.ttl_secs).arg(json)
-            .query_async(&mut conn).await?;
-        Ok(())
-    }
-
-    async fn clear(&self, id: &str) -> anyhow::Result<()> {
-        let mut conn = self.client.get_async_connection().await?;
-        redis::cmd("DEL").arg(id).query_async(&mut conn).await?;
+    pub async fn save(&self, id: &str, history: &[Message]) -> anyhow::Result<()> {
+        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let json = serde_json::to_string(history)?;
+        conn.set_ex(id, json, self.ttl_secs).await?;
         Ok(())
     }
 }
 ```
 
-Attach it to an agent exactly like the built-in backend:
+Usage is identical to the in-process `SessionStore` — load, chat, push, save:
 
 ```rust
-let memory = RedisMemory { client, ttl_secs: 3600 };
-let agent = client.agent(openai::GPT_4O_MINI)
-    .memory(memory)
-    .build();
+let history = redis_store.load(session_id).await?;
+let reply = agent.chat(prompt, &history).await?;
+let mut updated = history;
+updated.push(Message::user(prompt));
+updated.push(Message::assistant(reply.as_str()));
+redis_store.save(session_id, &updated).await?;
 ```
 
-### Java comparison
-
-LangChain4j's `ChatMemoryStore` interface is structurally identical:
-
-```java
-public interface ChatMemoryStore {
-    List<ChatMessage> getMessages(Object memoryId);
-    void updateMessages(Object memoryId, List<ChatMessage> messages);
-    void deleteMessages(Object memoryId);
-}
-```
-
-The `ConversationMemory` trait is Rust's version of the same contract.
+> **Java parallel:** LangChain4j's `ChatMemoryStore` interface has `getMessages`, `updateMessages`, and `deleteMessages`. The Redis implementation above covers the same three operations — rig just doesn't prescribe a formal trait for them.
 
 ---
 
-## 10.5 Pattern 3 — Bounded History with `rig-memory`
+## 10.5 Pattern 3 — Bounded History
 
-The previous patterns let history grow without limit. That's fine for short conversations, but will eventually:
-- Exceed the model's context window (hard failure)
-- Inflate cost and latency on every turn (soft failure)
+The previous patterns let history grow without limit. That's fine for short conversations, but will eventually exceed the model's context window or inflate per-turn cost. The fix is simple: slice history before passing it to `chat()`.
 
-The `rig-memory` crate provides **memory policies** — functions that transform history before it is sent to the model:
+### Sliding-window truncation
+
+```rust
+/// Keep only the most recent `max_messages` from `history`.
+fn sliding_window(history: &[Message], max_messages: usize) -> Vec<Message> {
+    if history.len() <= max_messages {
+        history.to_vec()
+    } else {
+        history[history.len() - max_messages..].to_vec()
+    }
+}
+```
+
+Usage:
+
+```rust
+const WINDOW: usize = 20; // 10 turns
+
+let windowed = sliding_window(&history, WINDOW);
+let reply = agent.chat(prompt, &windowed).await?;
+history.push(Message::user(prompt));
+history.push(Message::assistant(reply.as_str()));
+```
+
+The full history `Vec` still grows (useful if you later want to persist or summarise it), but only the last `WINDOW` messages are sent to the model on each call.
+
+### Token-aware truncation
+
+When messages vary widely in length (e.g. code blocks alongside short replies), a message count is a coarse proxy for tokens. A rough heuristic: estimate 1 token ≈ 4 characters of English text, or use `tiktoken-rs` for exact OpenAI counts:
 
 ```toml
-[dependencies]
-rig-memory = "0.1"
+# tiktoken-rs = "0.5"  (add to Cargo.toml if needed)
 ```
-
-### `SlidingWindowMemory`
-
-Keeps the most recent `n` messages, discarding older ones:
 
 ```rust
-use rig_memory::{InMemoryConversationMemory, SlidingWindowMemory};
-
-// Keep last 20 messages (10 turns)
-let memory = InMemoryConversationMemory::new()
-    .with_filter(SlidingWindowMemory::new(20));
-
-let agent = client
-    .agent(openai::GPT_4O_MINI)
-    .preamble("You are a helpful assistant.")
-    .memory(memory)
-    .build();
+// Heuristic token budget — drop oldest messages until under budget.
+// Serialises each message to JSON to measure its approximate byte size.
+fn token_window(history: &[Message], max_chars: usize) -> Vec<Message> {
+    let mut kept: Vec<&Message> = Vec::new();
+    let mut total = 0usize;
+    for msg in history.iter().rev() {
+        // JSON length is a reasonable proxy for token count (1 token ≈ 4 chars)
+        let len = serde_json::to_string(msg).unwrap_or_default().len();
+        if total + len > max_chars { break; }
+        total += len;
+        kept.push(msg);
+    }
+    kept.into_iter().rev().cloned().collect()
+}
 ```
-
-> **Note:** `rig_memory::InMemoryConversationMemory` (from the `rig-memory` crate) is the policy-aware variant. It shares the same logical purpose as `rig::memory::InMemoryConversationMemory` (from rig-core) but adds the `.with_filter()` method. Use the `rig-memory` variant when you need a policy; use the rig-core variant for simple in-memory storage.
-
-### `TokenWindowMemory`
-
-Keeps messages that fit within a token budget, using a heuristic counter that requires no external API call:
-
-```rust
-use rig_memory::{
-    InMemoryConversationMemory, TokenWindowMemory,
-    HeuristicTokenCounter, TokenCounterPreset,
-};
-
-// Keep messages within 8192 tokens (OpenAI preset)
-let counter = HeuristicTokenCounter::new(TokenCounterPreset::OpenAI);
-let memory = InMemoryConversationMemory::new()
-    .with_filter(TokenWindowMemory::new(8192, counter));
-
-let agent = client
-    .agent(openai::GPT_4O_MINI)
-    .preamble("You are a helpful assistant.")
-    .memory(memory)
-    .build();
-```
-
-`TokenWindowMemory` is preferable to `SlidingWindowMemory` when conversations have variable message sizes — a long code block in one message can consume more tokens than twenty short exchanges.
 
 ### Choosing a budget
 
-A practical rule of thumb for `gpt-4o-mini` (128k context window):
-- Reserve ~4k tokens for the system prompt and tool schemas
+Rule of thumb for `gpt-4o-mini` (128k context):
+- Reserve ~4k tokens for system prompt + tool schemas
 - Reserve ~4k tokens for the response
-- Budget ~8k–16k for conversation history
-
-```rust
-// Leaves ~16k for system prompt + response
-let memory = InMemoryConversationMemory::new()
-    .with_filter(TokenWindowMemory::new(16_384, counter));
-```
+- Budget ~8k–16k tokens (≈32k–64k chars) for conversation history
 
 ### Java comparison
 
-LangChain4j's `MessageWindowChatMemory` and `TokenWindowChatMemory` are direct parallels:
-
-```java
-// LangChain4j — message window
-ChatMemory memory = MessageWindowChatMemory.withMaxMessages(20);
-
-// LangChain4j — token window
-ChatMemory memory = TokenWindowChatMemory.builder()
-    .maxTokens(8192, tokenizer)
-    .build();
-```
-
-The rig-memory API follows the same mental model: window type + size + optional tokenizer.
+LangChain4j's `MessageWindowChatMemory.withMaxMessages(n)` and `TokenWindowChatMemory` apply the same truncation strategy. In Rust there is no framework magic — the truncation is a plain function applied to your `Vec<Message>` before each call. This makes the behaviour explicit and testable.
 
 ---
 
@@ -355,32 +317,52 @@ The rig-memory API follows the same mental model: window type + size + optional 
 
 When old messages are evicted by a sliding window, context is permanently lost. For long-running agents — personal assistants, support bots, research agents — losing early context is unacceptable.
 
-**Compaction** replaces evicted messages with a summary instead of discarding them. The `rig-memory` crate provides `CompactingMemory` for this:
+**Compaction** replaces evicted messages with a summary instead of discarding them. Rig doesn't provide a built-in compactor, but the pattern is straightforward to implement using your rig agent itself:
 
 ```rust
-use rig_memory::{
-    CompactingMemory, DemotingPolicyMemory,
-    SlidingWindowMemory, TemplateCompactor,
-};
+use rig::completion::Prompt;
+use rig::completion::Message;
 
-// TemplateCompactor produces plain-text rollups without an LLM call.
-// For LLM-driven summaries, implement the Compactor trait yourself.
-let compactor = TemplateCompactor::default();
-let memory = CompactingMemory::new(
-    SlidingWindowMemory::new(20),
-    compactor,
-);
+/// Summarise `to_evict` messages using the agent, then return a single
+/// "Earlier in this conversation: …" message as their replacement.
+async fn compact(
+    agent: &impl rig::completion::Prompt,
+    to_evict: &[Message],
+) -> anyhow::Result<Message> {
+    // Serialise to JSON for the prompt — Message implements Serialize
+    let history_json = serde_json::to_string_pretty(to_evict)
+        .unwrap_or_else(|_| "[history unavailable]".to_string());
+    let summary_prompt = format!(
+        "Summarise the following conversation history in 2-3 sentences, \
+         capturing the key facts for future reference:\n\n{history_json}"
+    );
+    let summary = agent.prompt(&summary_prompt).await?;
+    Ok(Message::user(format!("Earlier in this conversation: {summary}")))
+}
+
+/// Apply a sliding window with compaction: evict old messages as a summary.
+async fn compact_window(
+    agent: &impl rig::completion::Prompt,
+    history: &mut Vec<Message>,
+    max_messages: usize,
+) -> anyhow::Result<()> {
+    if history.len() > max_messages {
+        let eviction_count = history.len() - max_messages;
+        let to_evict = history[..eviction_count].to_vec();
+        let summary = compact(agent, &to_evict).await?;
+        history.drain(..eviction_count);
+        history.insert(0, summary);
+    }
+    Ok(())
+}
 ```
 
-The compaction flow:
-1. History grows beyond the window
-2. The policy identifies messages to evict
-3. The compactor synthesises a summary message: `"Earlier in this conversation: …"`
-4. The summary replaces the evicted messages in the active window
+The flow:
+1. History grows beyond `max_messages`
+2. Evicted messages are summarised into one `Message::user("Earlier in this conversation: …")`
+3. The summary is prepended; the agent always sees a compact history *plus* a digest of earlier context
 
-The agent always sees a compact history that fits the window *and* retains a summary of earlier context.
-
-> **When to compact:** compaction makes most sense for persistent personal assistants (session that resumes across days/weeks). For session-scoped support bots or API handlers, a simple `SlidingWindowMemory` is usually sufficient.
+> **When to compact:** for persistent personal assistants that resume across sessions. For session-scoped API handlers, plain `sliding_window()` is simpler and sufficient. Compaction adds one LLM call per eviction cycle.
 
 ---
 
@@ -392,7 +374,7 @@ Suitable for single-user applications or prototypes:
 
 ```rust
 use std::path::Path;
-use rig::message::Message;
+use rig::completion::Message;
 
 async fn load_history(path: &str) -> Vec<Message> {
     if Path::new(path).exists() {
@@ -411,7 +393,10 @@ async fn save_history(path: &str, history: &[Message]) -> anyhow::Result<()> {
 
 // Usage
 let mut history = load_history("session.json").await;
-let response = agent.chat("Continue where we left off.", &mut history).await?;
+let prompt = "Continue where we left off.";
+let response = agent.chat(prompt, &history).await?;
+history.push(Message::user(prompt));
+history.push(Message::assistant(response.as_str()));
 save_history("session.json", &history).await?;
 ```
 
@@ -425,7 +410,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "json"] }
 
 ```rust
 use sqlx::SqlitePool;
-use rig::message::Message;
+use rig::completion::Message;
 
 async fn load_history(pool: &SqlitePool, conv_id: &str) -> anyhow::Result<Vec<Message>> {
     let row = sqlx::query!(
@@ -458,9 +443,9 @@ async fn save_history(
 }
 ```
 
-### Implementing `ConversationMemory` on top of SQLite
+### Using SQLite with the session pattern
 
-Wrap the SQLite functions in a struct that implements `ConversationMemory` (Section 10.4) and attach it to the agent with `.memory()`. This gives you the ergonomics of managed memory with durable storage.
+Wrap these functions in a struct following the same load-chat-push-save contract from §10.4. The agent code doesn't change — only the storage backend does.
 
 ---
 
@@ -491,7 +476,7 @@ Agent: Your name is Alice.
 
 ────────────────────────────────────────────────
 
-━━━ Pattern 2: InMemoryConversationMemory ━━━
+━━━ Pattern 2: In-process session store ━━━
 
 [Alice] Turn 1: Hello Alice! I'll keep my answers concise.
 [Bob]   Turn 1: Hello! Haskell is an excellent language.
@@ -502,11 +487,12 @@ Agent: Your name is Alice.
 
 ━━━ Pattern 3: Sliding-window (last 4 messages) ━━━
 
-Turn 1: established project name 'Titan'
-Turn 2: added storage detail
-Turn 3: added deployment detail (window now at 4 messages)
+Turn 1: established project name 'Titan' (history: 2 msgs)
+Turn 2: added storage detail (history: 4 msgs)
+Turn 3: added deployment detail (history: 6 msgs, window passes last 4)
+(Sending 4 messages to model — Turn 1 excluded)
 Turn 4 (project name query): I don't have that information in our conversation.
-(Expected: agent cannot recall 'Titan' — it was evicted from the window)
+(Expected: agent cannot recall 'Titan' — it was outside the window)
 ```
 
 ### Walkthrough: sliding window
@@ -532,14 +518,14 @@ This demonstrates that sliding-window memory is **not transparent** to the user.
 | Scenario | Recommended Pattern |
 |----------|---------------------|
 | Stateless API — history sent on each request | Manual `Vec<Message>` |
-| Single-server multi-user bot, no durability needed | `InMemoryConversationMemory` |
-| Long conversations — must control context window cost | `SlidingWindowMemory` or `TokenWindowMemory` |
-| Long-running personal assistant — can't lose early context | `CompactingMemory` |
-| Multi-server deployment — must survive restart | Custom `ConversationMemory` over Redis/SQLite |
+| Single-server multi-user bot, no durability needed | In-process `SessionStore` (§10.3) |
+| Long conversations — control context window cost | `sliding_window()` helper (§10.5) |
+| Long-running personal assistant — preserve early context | Manual compaction with summarisation (§10.6) |
+| Multi-server deployment — must survive restart | Redis or SQLite backend (§10.4, §10.7) |
 | Semantic recall — "what did we say about X?" | `dynamic_context` + vector store (Chapter 8) |
 
 The last row is important: conversational memory and RAG memory are **orthogonal**. A production agent often uses both:
-- `InMemoryConversationMemory` or `SlidingWindowMemory` for recent turn history
+- A `SessionStore` or sliding-window for recent turn history
 - A vector index (Chapter 8's `dynamic_context`) for long-term semantic search over past exchanges or documents
 
 ---
@@ -547,14 +533,13 @@ The last row is important: conversational memory and RAG memory are **orthogonal
 ## 10.10 Key Takeaways
 
 - **LLM memory is faked** — every call re-sends prior messages; the model has no persistent state.
-- **`Agent::chat(prompt, &mut Vec<Message>)`** (rig-core 0.37) — auto-appends both turns; no manual push.
-- **`InMemoryConversationMemory`** (rig-core) — zero-config per-conversation storage; use `.conversation(id)` to scope by user.
-- **`.without_memory()`** — opt out of memory for a single request without changing the agent's configuration.
-- **`SlidingWindowMemory` / `TokenWindowMemory`** (rig-memory crate) — bounded history; use `.with_filter()` on the policy-aware `InMemoryConversationMemory` from `rig-memory`.
-- **`CompactingMemory`** — replaces evicted messages with a summary; preserves early context at the cost of an extra LLM call.
-- **Custom `ConversationMemory`** — implement three async methods (`load`, `append`, `clear`) to use any storage backend.
-- **`Message` is serializable** — `Vec<Message>` can be round-tripped through `serde_json` for any persistence layer.
-- **`rig-memory` vs rig-core memory** — use `rig::memory::InMemoryConversationMemory` for simple storage; use `rig_memory::InMemoryConversationMemory` (from the `rig-memory` crate) when you need a policy.
+- **`Agent::chat(prompt, &history)`** — takes `impl IntoIterator<Item: Into<Message>>`; pass `&Vec<Message>`. Does NOT mutate history — push user + assistant turns yourself after each call.
+- **Manual push**: `history.push(Message::user(q)); history.push(Message::assistant(reply.as_str()));`
+- **In-process `SessionStore`** — `Mutex<HashMap<String, Vec<Message>>>` gives multi-user isolation with no external dependencies; lost on restart.
+- **`sliding_window(history, n)`** — a plain function that returns the last `n` messages; pass the result to `chat()` to bound context cost.
+- **Compaction** — summarise evicted messages into a digest using the agent itself; insert as a `Message::user("Earlier…")` at the front.
+- **`Message` is serializable** — `Vec<Message>` round-trips through `serde_json`; persistence is just `to_string` + `from_str`.
+- **Persistence = load → chat → push → save** — the same three-line pattern works regardless of whether the backend is a local `HashMap`, JSON file, SQLite, or Redis.
 
 ---
 

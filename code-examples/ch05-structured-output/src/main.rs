@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let extractor = openai::Client::from_env()?
+    let extractor = openai::Client::from_env()
         .extractor::<Resume>(openai::GPT_4O_MINI)
         .preamble(
             "Extract structured resume data from the provided text. \

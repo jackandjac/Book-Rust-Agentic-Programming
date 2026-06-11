@@ -11,7 +11,6 @@ written for engineers migrating from Java and the Spring AI / LangChain4j ecosys
 
 ---
 
-
 # Chapter 1: Why Rust for Agentic AI?
 
 > **Framework versions in this chapter:** No framework dependencies — pure concepts.  
@@ -90,11 +89,11 @@ These libraries have thousands of production deployments, comprehensive document
 
 | Crate | Version | What it does |
 |-------|---------|-------------|
-| `rig-core` | 0.37.0 | LLM integration, tool calling, agents, memory (7.3k GitHub stars) |
+| `rig-core` | 0.37.0 | LLM integration, tool calling, agents, embeddings, RAG |
 | `async-openai` | 0.38.1 | Direct OpenAI API client (4.8M downloads) |
 | `swiftide` | 0.32.1 | Streaming RAG indexing pipelines |
 | `autoagents` | 0.3.7 | Multi-agent systems with actor model |
-| `graph-flow` | 0.5.1 | Graph-based workflow orchestration (small, 312 stars) |
+| `graph-flow` | 0.5.1 | Graph-based workflow orchestration (small, early-stage project) |
 | `rmcp` | 1.6.0 | Model Context Protocol — the only 1.x stable crate |
 
 **The honest state of the Rust ecosystem:**
@@ -252,10 +251,10 @@ Here's the mapping at a high level:
 | Java concept | Rust equivalent | Chapters |
 |-------------|----------------|---------|
 | `ChatClient` (Spring AI) | `rig::completion::Prompt` | Ch 3–5 |
-| `@Tool` annotation | `#[tool]` attribute + `Tool` trait | Ch 4 |
-| `ChatMemory` (LangChain4j) | In-memory `Vec` + session storage traits | Ch 7 |
-| `EmbeddingStoreIngestor` | Swiftide pipeline | Ch 6 |
-| `StateGraph` (LangGraph4j) | `graph-flow::StateGraph` | Ch 8 |
+| `@Tool` annotation | `#[rig_tool]` macro + `Tool` trait | Ch 4 |
+| `ChatMemory` (LangChain4j) | Manual `Vec<Message>` + sliding-window truncation | Ch 6, Ch 10 |
+| `EmbeddingStoreIngestor` | Swiftide pipeline | Ch 9 |
+| `StateGraph` (LangGraph4j) | `graph-flow::StateGraph` | Ch 12 |
 | `@AiService` interface | Async trait + generic functions | Ch 4–5 |
 | MCP client (Spring AI) | `rmcp` client | Ch 11 |
 | `CompletableFuture` | `async/await` + `tokio::spawn` | Ch 2 |
@@ -302,9 +301,6 @@ What Rust offers is a different trade-off: deterministic performance, smaller fo
 ---
 
 *Next: Chapter 2 — Rust for Java Developers: Ownership, Traits, and Async*
-
----
-
 
 # Chapter 2: Rust for Java Developers
 
@@ -798,9 +794,16 @@ fn main() {
         None => println!("No user found"),
     }
 
-    // Shorthand options:
+    // Shorthand option: provide a fallback value
     let user2 = find_user(1).unwrap_or_else(|| String::from("anonymous"));
-    let user3 = find_user(1)?; // In functions returning Option — propagates None
+    println!("{user2}");
+}
+
+// The ? operator works on Option in a function that returns Option.
+// It propagates None to the caller — equivalent to a short-circuit return.
+fn first_user() -> Option<String> {
+    let name = find_user(1)?; // if None, return None immediately
+    Some(name.to_uppercase())  // Some("ALICE") if id == 1
 }
 ```
 
@@ -1180,10 +1183,25 @@ As JSON:
 
 This is the skeleton of every AI agent component in this book. In Chapter 3, `EchoResponder` becomes a real LLM client, and `process_message` becomes a streaming chat function.
 
-To run this example from the companion repository:
+To run this example yourself, create a new project:
 
 ```bash
-cd code-examples/ch03-llm-basics  # we'll build this in Chapter 3
+cargo new ch02-demo && cd ch02-demo
+```
+
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+```
+
+Paste the code into `src/main.rs`, then:
+
+```bash
 cargo run
 ```
 
@@ -1255,9 +1273,6 @@ error[E0277]: `Rc<RefCell<i32>>` cannot be sent between threads safely
 ---
 
 *Next: Chapter 3 — LLM Basics in Rust: async-openai and Your First Streaming Chat*
-
----
-
 
 # Chapter 3: LLM Basics in Rust
 
@@ -1383,7 +1398,7 @@ async fn main() -> Result<()> {
     // Build the request using the builder pattern
     let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-4o-mini")
-        .max_tokens(256u32)
+        .max_completion_tokens(256u32)
         .messages([
             ChatCompletionRequestSystemMessage::from(
                 "You are a concise assistant. Answer in one sentence.",
@@ -1517,7 +1532,7 @@ async fn main() -> Result<()> {
 
     let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-4o-mini")
-        .max_tokens(512u32)
+        .max_completion_tokens(512u32)
         .messages([
             ChatCompletionRequestSystemMessage::from(
                 "You are a helpful assistant explaining Rust to Java developers.",
@@ -1666,7 +1681,7 @@ async fn send_and_record(
 ) -> Result<String> {
     let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-4o-mini")
-        .max_tokens(512u32)
+        .max_completion_tokens(512u32)
         .messages(history.clone())
         .build()?;
 
@@ -1719,7 +1734,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
     // Creates client reading OPENAI_API_KEY from environment
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
 
     // Build an agent with a system prompt (preamble)
     let agent = client
@@ -1790,43 +1805,35 @@ use rig::{
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
 
     let agent = client
         .agent(openai::GPT_4O_MINI)
         .preamble("You are a Rust tutor helping Java developers.")
         .build();
 
-    // History of previous messages (role + content pairs)
+    // History of previous messages — grow it manually after each turn
     let mut history: Vec<Message> = vec![];
 
-    // Turn 1
-    let reply1 = agent
-        .chat("What is ownership in Rust?", history.clone())
-        .await?;
+    // Turn 1: pass history by reference (borrows, does not consume)
+    let q1 = "What is ownership in Rust?";
+    let reply1 = agent.chat(q1, &history).await?;
     println!("Turn 1: {reply1}\n");
 
-    // Record the exchange in history
-    history.push(Message {
-        role: "user".to_string(),
-        content: "What is ownership in Rust?".to_string(),
-    });
-    history.push(Message {
-        role: "assistant".to_string(),
-        content: reply1,
-    });
+    // Append this exchange manually — chat() does NOT mutate history
+    history.push(Message::user(q1));
+    history.push(Message::assistant(reply1.as_str()));
 
-    // Turn 2 — history includes the previous turn
-    let reply2 = agent
-        .chat("How does that differ from Java's GC?", history.clone())
-        .await?;
+    // Turn 2 — history now contains the previous exchange
+    let q2 = "How does that differ from Java's GC?";
+    let reply2 = agent.chat(q2, &history).await?;
     println!("Turn 2: {reply2}");
 
     Ok(())
 }
 ```
 
-> **API note (rig-core 0.37):** `Agent::chat()` takes `&mut Vec<Message>` and **automatically appends** both the user turn and the assistant response after each call. You do not need to push messages manually — see Chapter 6 for the full multi-turn pattern. Full API: [`rig::agent`](https://docs.rs/rig-core/0.37.0/rig/agent/).
+> **API note:** `Agent::chat()` takes `chat_history: impl IntoIterator<Item: Into<Message>>`. Passing `&history` works because `&Vec<T>` implements `IntoIterator`. The method does **not** mutate the history — you must push the user and assistant turns yourself after each call using `Message::user(text)` and `Message::assistant(text)`. See Chapter 6 for the full multi-turn pattern. Full API: [`rig::agent`](https://docs.rs/rig-core/latest/rig/agent/).
 
 ---
 
@@ -1851,12 +1858,10 @@ use rig::{
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     // Reads ANTHROPIC_API_KEY from environment
-    let client = anthropic::Client::from_env()?;
+    let client = anthropic::Client::from_env();
 
-    // Constant verified: rig-core 0.37 anthropic::completion::CLAUDE_SONNET_4_6
-    // The path is anthropic::completion::CLAUDE_SONNET_4_6 or re-exported — check docs.rs
     let agent = client
-        .agent(anthropic::completion::CLAUDE_SONNET_4_6)
+        .agent(anthropic::completion::CLAUDE_SONNET_4_6)  // "claude-sonnet-4-6"
         .preamble("You are a concise assistant.")
         .build();
 
@@ -1880,17 +1885,16 @@ Then in Rust:
 
 ```rust
 use rig::{
-    client::{CompletionClient, ProviderClient},
+    client::{CompletionClient, Nothing},
     completion::Prompt,
     providers::ollama,
 };
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Client::new() defaults to http://localhost:11434, no auth
-    // Signature: Client::new(None) or Client::new(Nothing) depending on version
-    // If compilation fails, try: ollama::Client::builder().build().unwrap()
-    let client = ollama::Client::new(None).unwrap();
+    // Nothing is rig's unit type for "no API key required"
+    // Defaults to http://localhost:11434
+    let client = ollama::Client::new(Nothing).unwrap();
 
     let agent = client
         .agent("llama3.2")    // model name as string — must match pulled model
@@ -1910,7 +1914,7 @@ The same code structure works regardless of provider. This is the key benefit of
 | Provider | Crate constant | Env var | Local? |
 |---------|---------------|---------|--------|
 | OpenAI | `openai::GPT_4O_MINI` | `OPENAI_API_KEY` | ❌ |
-| Anthropic | `anthropic::CLAUDE_3_5_SONNET` | `ANTHROPIC_API_KEY` | ❌ |
+| Anthropic | `anthropic::completion::CLAUDE_SONNET_4_6` | `ANTHROPIC_API_KEY` | ❌ |
 | Ollama | Model name as string | None | ✅ |
 | Azure OpenAI | Via `openai::Client::from_url()` | `AZURE_OPENAI_API_KEY` | ❌ |
 
@@ -1921,7 +1925,7 @@ The same code structure works regardless of provider. This is the key benefit of
 Let's build a complete interactive streaming chat CLI — the equivalent of a minimal ChatGPT terminal interface. This pulls together everything in the chapter.
 
 ```rust
-// src/bin/chat-cli.rs
+// code-examples/ch03-llm-basics/src/main.rs
 use anyhow::Result;
 use async_openai::{
     types::chat::{
@@ -1976,7 +1980,7 @@ async fn main() -> Result<()> {
         // Build streaming request with full history
         let request = CreateChatCompletionRequestArgs::default()
             .model("gpt-4o-mini")
-            .max_tokens(1024u32)
+            .max_completion_tokens(1024u32)
             .messages(history.clone())
             .build()?;
 
@@ -2015,18 +2019,12 @@ async fn main() -> Result<()> {
 }
 ```
 
-Add the binary to `Cargo.toml`:
-
-```toml
-[[bin]]
-name = "chat-cli"
-path = "src/bin/chat-cli.rs"
-```
-
 Run it:
 
 ```bash
-cargo run --bin chat-cli
+cd code-examples
+export OPENAI_API_KEY=sk-...
+cargo run -p ch03-llm-basics
 ```
 
 Sample session:
@@ -2057,10 +2055,10 @@ This chapter focused on the essentials. Here's what's next:
 |-------|---------|
 | Tool calling (function calling) | Chapter 4 |
 | Structured output with serde | Chapter 5 |
-| Embeddings and vector search | Chapter 6 |
-| Memory management (truncation, summarization) | Chapter 7 |
-| Anthropic API details | Chapter 4 (tool calling) |
-| Local LLMs with Kalosm (full local inference) | Chapter 13 |
+| Rig agents and multi-turn memory | Chapter 6 |
+| Memory management (truncation, summarization) | Chapter 10 |
+| RAG and embeddings | Chapter 8 |
+| Local LLMs with Kalosm (full local inference) | Chapter 17 |
 
 **async-openai features not covered here:**
 - Vision / multimodal inputs (image in the message)
@@ -2095,9 +2093,6 @@ All of these follow the same builder pattern you've learned — consult [docs.rs
 ---
 
 *Next: Chapter 4 — Tool Calling with Rig: the `#[rig_tool]` Macro vs Java's `@Tool`*
-
----
-
 
 # Chapter 4: Tool Calling
 
@@ -2433,8 +2428,7 @@ Registering with an agent:
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    // Note: from_env() returns Result — unwrap with ?
-    let agent = openai::Client::from_env()?
+    let agent = openai::Client::from_env()
         .agent(openai::GPT_4O)
         .preamble("You are a calculator. Use the tools before answering.")
         .tool(Add)
@@ -2475,7 +2469,7 @@ use rig_derive::rig_tool;
     description = "Get the current weather for a named city",
     params(city = "The city name, e.g. 'London' or 'Tokyo'")
 )]
-async fn get_weather(city: String) -> Result<String, ToolError> {
+fn get_weather(city: String) -> Result<String, ToolError> {
     Ok(format!("The weather in {city} is 15°C and partly cloudy."))
 }
 ```
@@ -2518,7 +2512,7 @@ async fn get_weather(city: String) -> Result<String, ToolError> {
 }
 ```
 
-The concepts map directly: annotation → attribute macro, `@P` → `params()` entry, return type → `Result<String, ToolError>`. The Rust version is `async` (all tool calls involve I/O in practice), and errors are explicit in the return type.
+The concepts map directly: annotation → attribute macro, `@P` → `params()` entry, return type → `Result<String, ToolError>`. Errors are explicit in the return type. Use `async fn` only when the tool body itself makes I/O calls; pure-computation tools use `fn`.
 
 ---
 
@@ -2536,7 +2530,7 @@ use rig::providers::openai;
     params(city = "The city name, e.g. 'London'"),
     required(city)
 )]
-async fn get_weather(city: String) -> Result<String, ToolError> {
+fn get_weather(city: String) -> Result<String, ToolError> {
     // Stub — replace with an HTTP call to a weather API
     match city.to_lowercase().as_str() {
         "london" => Ok("London: 12°C, overcast".to_string()),
@@ -2555,7 +2549,7 @@ async fn get_weather(city: String) -> Result<String, ToolError> {
     ),
     required(value, from, to)
 )]
-async fn convert_temperature(
+fn convert_temperature(
     value: f64,
     from: String,
     to: String,
@@ -2564,14 +2558,18 @@ async fn convert_temperature(
         "C" => value,
         "F" => (value - 32.0) * 5.0 / 9.0,
         "K" => value - 273.15,
-        other => return Err(ToolError::new(format!("Unknown unit '{other}'"))),
+        other => return Err(ToolError::ToolCallError(
+            format!("Unknown source unit '{other}'. Use C, F, or K.").into()
+        )),
     };
 
     let result = match to.to_uppercase().as_str() {
         "C" => celsius,
         "F" => celsius * 9.0 / 5.0 + 32.0,
         "K" => celsius + 273.15,
-        other => return Err(ToolError::new(format!("Unknown unit '{other}'"))),
+        other => return Err(ToolError::ToolCallError(
+            format!("Unknown target unit '{other}'. Use C, F, or K.").into()
+        )),
     };
 
     Ok(format!("{value}°{from} = {result:.1}°{to}"))
@@ -2581,7 +2579,7 @@ async fn convert_temperature(
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    let agent = openai::Client::from_env()?
+    let agent = openai::Client::from_env()
         .agent(openai::GPT_4O)
         .preamble(
             "You are a helpful assistant with weather data and a temperature converter. \
@@ -2620,16 +2618,16 @@ use rig::tool::ToolError;
     params(ticker = "Stock ticker symbol, e.g. 'AAPL' or 'GOOGL'"),
     required(ticker)
 )]
-async fn get_stock_price(ticker: String) -> Result<String, ToolError> {
+fn get_stock_price(ticker: String) -> Result<String, ToolError> {
     // Validate — tickers are 1-5 uppercase ASCII letters
     let ticker = ticker.trim().to_uppercase();
     if ticker.is_empty()
         || ticker.len() > 5
         || !ticker.chars().all(|c| c.is_ascii_alphabetic())
     {
-        return Err(ToolError::new(format!(
+        return Err(ToolError::ToolCallError(format!(
             "Invalid ticker '{}'. Expected 1-5 letters (e.g. 'AAPL')", ticker
-        )));
+        ).into()));
     }
 
     // Proceed with validated, normalized input
@@ -2698,7 +2696,7 @@ Register stateful tools the same way:
 ```rust
 let weather_tool = WeatherApiTool::new(std::env::var("WEATHER_API_KEY")?);
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O)
     .tool(weather_tool)
     .build();
@@ -2726,7 +2724,7 @@ use rig_derive::rig_tool;
     params(city = "The city name, e.g. 'London' or 'New York'"),
     required(city)
 )]
-async fn get_weather(city: String) -> Result<String, ToolError> {
+fn get_weather(city: String) -> Result<String, ToolError> {
     // Stub: replace with a real weather API call
     match city.to_lowercase().as_str() {
         "london" => Ok("London: 12°C, overcast".to_string()),
@@ -2745,7 +2743,7 @@ async fn get_weather(city: String) -> Result<String, ToolError> {
     ),
     required(value, from, to)
 )]
-async fn convert_temperature(
+fn convert_temperature(
     value: f64,
     from: String,
     to: String,
@@ -2754,18 +2752,18 @@ async fn convert_temperature(
         "C" => value,
         "F" => (value - 32.0) * 5.0 / 9.0,
         "K" => value - 273.15,
-        other => return Err(ToolError::new(format!(
-            "Unknown source unit '{other}'. Use C, F, or K."
-        ))),
+        other => return Err(ToolError::ToolCallError(
+            format!("Unknown source unit '{other}'. Use C, F, or K.").into()
+        )),
     };
 
     let result = match to.to_uppercase().as_str() {
         "C" => celsius,
         "F" => celsius * 9.0 / 5.0 + 32.0,
         "K" => celsius + 273.15,
-        other => return Err(ToolError::new(format!(
-            "Unknown target unit '{other}'. Use C, F, or K."
-        ))),
+        other => return Err(ToolError::ToolCallError(
+            format!("Unknown target unit '{other}'. Use C, F, or K.").into()
+        )),
     };
 
     Ok(format!("{value}°{from} = {result:.1}°{to}"))
@@ -2776,7 +2774,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let agent = openai::Client::from_env()?
+    let agent = openai::Client::from_env()
         .agent(openai::GPT_4O)
         .preamble(
             "You are a helpful assistant with weather data and a temperature converter. \
@@ -2887,9 +2885,6 @@ In production logs, you may see `function_call` and `tool_calls` both appear dep
 ---
 
 *Next: Chapter 5 — Structured Output: JSON from LLMs with Serde and Rig Extractors*
-
----
-
 
 # Chapter 5: Structured Output
 
@@ -3071,9 +3066,10 @@ With this pattern:
 ### Building an Extractor
 
 ```rust
+use rig::client::ProviderClient;
 use rig::providers::openai;
 
-let client = openai::Client::from_env()?;
+let client = openai::Client::from_env();
 
 // Type parameter T must impl: JsonSchema + Deserialize + Serialize + Send + Sync
 let extractor = client
@@ -3143,7 +3139,8 @@ struct SentimentResult {
     reasoning: String,
 }
 
-let extractor = openai::Client::from_env()?
+// use rig::client::ProviderClient;  // required if not already imported
+let extractor = openai::Client::from_env()
     .extractor::<SentimentResult>(openai::GPT_4O_MINI)
     .build();
 
@@ -3296,7 +3293,7 @@ struct Sentiment {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
 
     let names_extractor = client
         .extractor::<Names>(openai::GPT_4O_MINI)
@@ -3434,7 +3431,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let extractor = openai::Client::from_env()?
+    let extractor = openai::Client::from_env()
         .extractor::<Resume>(openai::GPT_4O_MINI)
         .preamble(
             "Extract structured resume data from the provided text. \
@@ -3537,13 +3534,10 @@ cargo run -p ch05-structured-output
 
 *Next: Chapter 6 — RAG: Retrieval-Augmented Generation with Swiftide*
 
----
-
-
 # Chapter 6: Rig Agents and Multi-Turn Conversations
 
 > **Framework versions in this chapter:**  
-> `rig-core = "0.37"` (772k downloads — memory module added in 0.37)  
+> `rig-core = "0.37"` (772k downloads)  
 > `futures = "0.3"` (Stream combinators for streaming output)  
 > `tokio = "1"`, `anyhow = "1"`, `dotenvy = "0.15"`
 >
@@ -3554,7 +3548,7 @@ cargo run -p ch05-structured-output
 ## What You'll Learn
 
 - How rig's `Agent` type manages system prompts, context, and LLM calls
-- Two conversation patterns: manual `Vec<Message>` history vs rig-managed `InMemoryConversationMemory`
+- Two conversation patterns: manual `Vec<Message>` history with `.chat()`, and streaming with `FinalResponse::history()`
 - The `AgentBuilder` configuration surface: preamble, context, temperature, max tokens
 - Streaming agent output with `stream_prompt()` and `stream_chat()`
 - How to write persona and guardrail logic in a preamble
@@ -3569,7 +3563,7 @@ In rig, an `Agent<M>` is a thin wrapper around a completion model (`M: Completio
 - A **preamble** — the system prompt, set at build time
 - **Context documents** — additional static background injected before each call
 - **Tools** — callable functions the LLM can invoke (covered in Chapter 4)
-- **Memory** — optional managed conversation history (covered in §6.4)
+- **Conversation history** — passed in on each call; management is the application's responsibility (§6.3, §6.4)
 
 That's it. The `Agent` does not run a loop, plan, or take autonomous actions by default — those patterns come from the graph and multi-agent chapters. Here, "agent" means a configured LLM interface with a persona and optional memory.
 
@@ -3585,7 +3579,7 @@ The `AgentBuilder` is obtained via `client.agent(model)`. All configuration is o
 use rig::client::{CompletionClient, ProviderClient};
 use rig::providers::openai;
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a helpful assistant.")
     .build();
@@ -3607,7 +3601,7 @@ use rig::providers::openai;
 ### The Full Builder API
 
 ```rust
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O)
     // System prompt — the agent's persona and instructions
     .preamble("You are an expert Rust developer. Be concise and precise.")
@@ -3618,9 +3612,7 @@ let agent = openai::Client::from_env()?
     .temperature(0.2)       // lower = more deterministic
     .max_tokens(1024)
     // Tools — see Chapter 4
-    // .tool(my_tool)
-    // Managed memory — see §6.4
-    // .memory(memory)
+    // .tool(my_tool)  // see Chapter 4
     .build();
 ```
 
@@ -3632,7 +3624,6 @@ let agent = openai::Client::from_env()?
 | `.temperature(f64)` | Sampling temperature (0.0–1.0; lower = more deterministic) |
 | `.max_tokens(u64)` | Maximum tokens in the response |
 | `.tool(tool)` | Register a callable tool (Chapter 4) |
-| `.memory(mem)` | Enable managed conversation memory (§6.4) |
 
 ---
 
@@ -3643,7 +3634,7 @@ The simplest multi-turn pattern: maintain a `Vec<Message>` yourself and pass it 
 ### The `Message` Type
 
 ```rust
-use rig::message::Message;
+use rig::completion::Message;
 
 // Constructors
 Message::user("Hello!");                    // user turn
@@ -3654,33 +3645,40 @@ Message::system("You are helpful.");        // system message (rare — use prea
 ### Manual History with `.chat()`
 
 ```rust
-use rig::client::{CompletionClient, ProviderClient};
-use rig::message::Message;
+use rig::client::CompletionClient;
+use rig::completion::Chat;
+use rig::completion::Message;
 use rig::providers::openai;
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a helpful assistant.")
     .build();
 
 let mut history: Vec<Message> = Vec::new();
 
-// Turn 1 — history starts empty; chat() appends [user("My name..."), assistant(r1)]
+// Turn 1 — pass history by reference (borrows, does not consume or mutate it)
 let q1 = "My name is Alice.";
-let r1 = agent.chat(q1, &mut history).await?;
+let r1 = agent.chat(q1, &history).await?;
+
+// Append this exchange manually — chat() does NOT mutate history
+history.push(Message::user(q1));
+history.push(Message::assistant(r1.as_str()));
 
 // Turn 2 — history now contains the previous exchange; agent knows Alice's name
 let q2 = "What's my name?";
-let r2 = agent.chat(q2, &mut history).await?;
+let r2 = agent.chat(q2, &history).await?;
+history.push(Message::user(q2));
+history.push(Message::assistant(r2.as_str()));
 
 println!("{r2}"); // "Your name is Alice."
 ```
 
 Key points:
-- `.chat(prompt, &mut Vec<Message>)` — takes a mutable reference; rig-core 0.37 automatically appends both the user turn and the assistant response after each call
-- You no longer need to push messages manually — the mutation is handled inside `chat()`
+- `.chat(prompt, chat_history)` — takes `impl IntoIterator<Item: Into<Message>>`. Passing `&history` works because `&Vec<T>` implements `IntoIterator`.
+- `chat()` does **not** mutate history — you push `Message::user(prompt)` and `Message::assistant(reply)` yourself after each call
+- `Message::user(text)` and `Message::assistant(text)` accept `impl Into<String>`
 - History is held entirely in your application — rig makes no calls to store or retrieve it
-- This is the right pattern when: conversation scope is request-scoped, history is short, or you want full control
 
 ### When Manual History Is Appropriate
 
@@ -3689,92 +3687,92 @@ Manual history works well when:
 - History is held in a database and you query it before each call
 - You want to filter, truncate, or transform history before sending it
 
-The downside: you must manage appending, truncating, and persisting history yourself. For persistent stateful agents, rig provides managed memory.
-
 > **Java parallel:** Manual history is equivalent to building a `List<Message>` and passing it to Spring AI's `ChatClient.prompt().messages(history).call()`. LangChain4j's `UserMessage` / `AiMessage` types map directly to rig's `Message::user()` / `Message::assistant()`.
 
 ---
 
-## 6.4 Multi-Turn Conversations: Managed Memory
+## 6.4 Multi-Turn Conversations: Streaming with History
 
-For persistent agents that maintain conversation history across calls without manual tracking, rig provides the `memory()` builder option combined with per-prompt conversation scoping.
+For interactive applications, rig's streaming API provides a clean way to maintain history through the `FinalResponse` object returned at the end of a stream. The `FinalResponse::history()` method returns the updated message list — user turn + assistant response — ready to pass to the next call.
 
-### `InMemoryConversationMemory`
+### Streaming Multi-Turn Pattern
 
 ```rust
-use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::Prompt;
-use rig::memory::InMemoryConversationMemory;
+use anyhow::Result;
+use futures::StreamExt;
+use rig::agent::MultiTurnStreamItem;
+use rig::client::CompletionClient;
+use rig::completion::Message;
 use rig::providers::openai;
+use rig::streaming::StreamingChat;
 
-// Build memory store (lives for the duration of the program)
-let memory = InMemoryConversationMemory::new();
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
 
-// Attach memory to the agent at build time
-let agent = openai::Client::from_env()?
-    .agent(openai::GPT_4O_MINI)
-    .preamble("You are a helpful assistant with persistent memory.")
-    .memory(memory)
-    .build();
+    let agent = openai::Client::from_env()
+        .agent(openai::GPT_4O_MINI)
+        .preamble("You are a helpful assistant.")
+        .build();
+
+    let mut history: Vec<Message> = Vec::new();
+
+    // Turn 1
+    let mut stream = agent.stream_chat("My name is Alice.", &history).await;
+    while let Some(item) = stream.next().await {
+        match item? {
+            MultiTurnStreamItem::FinalResponse(fin) => {
+                // extend history with [user("My name is Alice."), assistant(reply)]
+                history.extend_from_slice(fin.history().unwrap_or_default());
+            }
+            _ => {}
+        }
+    }
+
+    // Turn 2 — history contains the previous exchange
+    let mut stream = agent.stream_chat("What's my name?", &history).await;
+    while let Some(item) = stream.next().await {
+        match item? {
+            MultiTurnStreamItem::FinalResponse(fin) => {
+                history.extend_from_slice(fin.history().unwrap_or_default());
+                // Print the reply from history
+                if let Some(last) = fin.history().and_then(|h| h.last()) {
+                    println!("{last:?}"); // "Your name is Alice."
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
 ```
 
-Once `.memory()` is set, use `.conversation(id)` on each prompt to scope history:
+The `fin.history()` slice contains the messages added this turn — append them to your `Vec<Message>` for the next call.
+
+### Non-Streaming Multi-Turn Pattern
+
+When using `.chat()` (non-streaming), there is no `FinalResponse` — push user and assistant messages manually as shown in §6.3:
 
 ```rust
-// A conversation identified by "user-42"
-let r1 = agent
-    .prompt("My name is Alice.")
-    .conversation("user-42")
-    .await?;
-
-let r2 = agent
-    .prompt("What's my name?")
-    .conversation("user-42")
-    .await?;
-
-println!("{r2}"); // "Your name is Alice."
+let q = "What is ownership?";
+let reply = agent.chat(q, &history).await?;
+history.push(Message::user(q));
+history.push(Message::assistant(reply.as_str()));
 ```
 
-The conversation ID scopes history — `"user-42"` and `"user-99"` have completely independent conversation histories. This means one `Agent` instance can serve many concurrent users without cross-contamination.
+### History Storage Strategies
 
-```rust
-// Two users, isolated histories, same agent
-let alice_r = agent.prompt("My name is Alice.").conversation("user-42").await?;
-let bob_r   = agent.prompt("My name is Bob.").conversation("user-99").await?;
+| Approach | Where history lives | Good for |
+|---|---|---|
+| `Vec<Message>` in function | Stack / local scope | Single session, request-scoped handlers |
+| `Arc<Mutex<Vec<Message>>>` | Shared heap | Multi-threaded server, one entry per session ID |
+| Database (SQLite, Postgres) | External storage | Production agents, persistence across restarts |
+| Redis `LPUSH/LRANGE` | External cache | Distributed services, TTL-based expiry |
 
-// Alice's history does not contain Bob's messages
-let alice_q = agent.prompt("What's my name?").conversation("user-42").await?;
-// → "Your name is Alice."
-```
+For production, store history keyed by session ID in a database or Redis. Load it before each call, pass it to `.chat()` or `.stream_chat()`, then persist the updated history. Chapter 10 covers memory management strategies — window sizing, token budgets, and compaction — in depth.
 
-### Constraint: `.conversation()` Requires `.memory()`
-
-`.conversation(id)` is only valid on a prompt when the agent was built with `.memory(...)`. Without it, `.conversation()` has no effect — the agent has nowhere to store or retrieve history. Build the agent with `.memory()` first.
-
-### `InMemoryConversationMemory` Limitations
-
-`InMemoryConversationMemory` stores all history in process memory (a `HashMap` behind a `Mutex`). This means:
-- **Not persistent** — history is lost on process restart
-- **Not distributed** — not shared across multiple service instances
-- **Unbounded** — long conversations grow indefinitely
-
-For production use, the `rig-memory` companion crate adds:
-- `SlidingWindowMemory` — retains the N most recent messages
-- `TokenWindowMemory` — keeps messages within a token budget
-- `CompactingMemory` — summarizes evicted messages into a condensed artifact
-
-These are covered in Chapter 10 (Memory and State).
-
-> **Java parallel:** `InMemoryConversationMemory` maps to Spring AI's `InMemoryChatMemory` backend, combined with `MessageChatMemoryAdvisor`:
-> ```java
-> ChatMemory chatMemory = new InMemoryChatMemory();
-> ChatClient chatClient = ChatClient.builder(chatModel)
->     .defaultAdvisors(
->         MessageChatMemoryAdvisor.builder(chatMemory).build()
->     )
->     .build();
-> ```
-> In LangChain4j, the equivalent is `MessageWindowChatMemory` + `AiServices`.
+> **Java parallel:** This matches Spring AI's `InMemoryChatMemory` with `MessageChatMemoryAdvisor` for prototype work, and a Redis- or JDBC-backed `ChatMemory` for production. The explicit `Vec<Message>` approach maps directly to LangChain4j's `MessageWindowChatMemory.messages()` — you manage the list, the framework just sends it.
 
 ---
 
@@ -3794,7 +3792,7 @@ You are a customer support agent for TechCorp. \
 \n- If you cannot resolve the issue, offer to connect them with a human agent.\
 \n\nYou do not have access to order management systems in this session.";
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble(SUPPORT_PREAMBLE)
     .build();
@@ -3811,7 +3809,7 @@ Tips:
 Use `.context()` for static background information that should be available on every call without being part of the conversation history:
 
 ```rust
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a TechCorp support agent.")
     .context("TechCorp products: RustBot (IDE plugin), DataFlow (ETL tool), CloudSync (backup service).")
@@ -3874,7 +3872,7 @@ struct SafetyVerdict {
     reason: Option<String>,
 }
 
-let moderator = openai::Client::from_env()?
+let moderator = openai::Client::from_env()
     .extractor::<SafetyVerdict>(openai::GPT_4O_MINI)
     .preamble(
         "Classify whether the following text is safe to show to a customer support user. \
@@ -3914,7 +3912,7 @@ use rig::client::{CompletionClient, ProviderClient};
 use rig::streaming::StreamingChat;
 use rig::providers::openai;
 
-let agent = openai::Client::from_env()?
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a helpful assistant.")
     .build();
@@ -3938,7 +3936,7 @@ println!("{response}");
 ### `stream_chat()` — Streaming with History
 
 ```rust
-use rig::message::Message;
+use rig::completion::Message;
 
 let history = vec![
     Message::user("What programming language should I learn first?"),
@@ -3972,15 +3970,14 @@ The pattern above (collecting only `FinalResponse`) is the safe baseline. For to
 
 ## 6.8 Hands-On: Customer Support Agent
 
-The complete runnable example demonstrates both history patterns:
+The complete runnable example demonstrates the manual history pattern:
 
 ```rust
 // code-examples/ch06-agents/src/main.rs
 use anyhow::Result;
-use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::Prompt;
-use rig::memory::InMemoryConversationMemory;
-use rig::message::Message;
+use rig::client::CompletionClient;
+use rig::completion::{Chat, Prompt};
+use rig::completion::Message;
 use rig::providers::openai;
 
 const PREAMBLE: &str = "\
@@ -3991,7 +3988,7 @@ Always be professional and empathetic. \
 If a customer reports a billing issue, tell them you will escalate to the billing team. \
 Never invent information about products you do not know about.";
 
-// Pattern 1: manual Vec<Message> history with .chat()
+// Manual Vec<Message> history — push user/assistant turns yourself after each call
 async fn demo_manual_history(client: &openai::Client) -> Result<()> {
     println!("=== Manual History ===\n");
     let agent = client
@@ -4003,51 +4000,41 @@ async fn demo_manual_history(client: &openai::Client) -> Result<()> {
 
     let q1 = "Hi, I'm having trouble logging into my account.";
     println!("User: {q1}");
-    let r1 = agent.chat(q1, &mut history).await?;
+    let r1 = agent.chat(q1, &history).await?;
     println!("Agent: {r1}\n");
-    // history now has [user(q1), assistant(r1)] — appended automatically
+    history.push(Message::user(q1));
+    history.push(Message::assistant(r1.as_str()));
 
     let q2 = "I've already tried resetting my password twice.";
     println!("User: {q2}");
-    let r2 = agent.chat(q2, &mut history).await?;
+    let r2 = agent.chat(q2, &history).await?;
     println!("Agent: {r2}\n");
 
     Ok(())
 }
 
-// Pattern 2: rig-managed memory with .memory() + .conversation(id)
-async fn demo_managed_memory(client: &openai::Client) -> Result<()> {
-    println!("=== Managed Memory ===\n");
-    let memory = InMemoryConversationMemory::new();
+async fn demo_prompt(client: &openai::Client) -> Result<()> {
+    println!("=== Single-Shot Prompt ===\n");
     let agent = client
         .agent(openai::GPT_4O_MINI)
         .preamble(PREAMBLE)
-        .memory(memory)
         .build();
 
-    let conv_id = "user-42";
-
-    let r1 = agent
-        .prompt("I ordered a laptop last week but it hasn't arrived.")
-        .conversation(conv_id)
+    let response = agent
+        .prompt("What is your return policy for laptops?")
         .await?;
-    println!("Turn 1: {r1}\n");
-
-    let r2 = agent
-        .prompt("The order number is ORD-88291.")
-        .conversation(conv_id)
-        .await?;
-    println!("Turn 2: {r2}\n");
-
+    println!("Response: {response}\n");
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
-    let client = openai::Client::from_env()?;
+    tracing_subscriber::fmt::init();
+    let client = openai::Client::from_env();
     demo_manual_history(&client).await?;
-    demo_managed_memory(&client).await?;
+    println!("---\n");
+    demo_prompt(&client).await?;
     Ok(())
 }
 ```
@@ -4062,30 +4049,30 @@ cargo run -p ch06-agents
 
 ---
 
-## 6.9 Choosing Between the Two History Patterns
+## 6.9 Choosing a History Storage Pattern
 
-| | Manual `Vec<Message>` + `.chat()` | Managed `.memory()` + `.conversation(id)` |
+Rig's `Agent` does not manage conversation history for you — it sends whatever history you pass in and returns a response. Persistence is your responsibility. The choice is which data structure to use:
+
+| Pattern | Where history lives | Good for |
 |---|---|---|
-| **Who stores history** | Your code | rig (`InMemoryConversationMemory`) |
-| **Persistence** | You control (DB, Redis, etc.) | In-process only — lost on restart |
-| **Multi-instance** | Works if you load from shared storage | Not distributed |
-| **History filtering** | Full control — truncate, transform, filter | Requires `rig-memory` policies |
-| **Best for** | Stateless services, DB-backed history | Single-process prototypes, dev tools |
-| **Conversation scoping** | Implicit (your Vec per session) | Explicit `conversation_id` string |
+| `Vec<Message>` in local scope | Stack | Single-session CLI tools, tests |
+| `Arc<Mutex<Vec<Message>>>` | Shared heap (keyed by session ID) | In-process multi-user servers |
+| SQLite / Postgres | External storage | Production agents needing persistence |
+| Redis | External cache with TTL | Distributed services, session expiry |
 
-In production: load history from a database before each call and use `.chat()`. `InMemoryConversationMemory` is the right tool for prototypes and single-process services.
+The API is the same in every case: before each call, load or build your `Vec<Message>`, pass `&history` to `.chat()` or `.stream_chat()`, then persist the new messages after. Chapter 10 covers window truncation and token budget strategies for keeping histories within model context limits.
 
 ---
 
 ## Key Takeaways
 
-- `Agent<M>` wraps a completion model with a preamble, context, tools, and optional memory. Build one with `client.agent(model).preamble(...).build()`.
-- Two required imports: `rig::client::CompletionClient` (for `.agent()`), `rig::client::ProviderClient` (for client construction), `rig::completion::Prompt` (for `.prompt()`).
-- **Manual history**: maintain a `Vec<Message>` yourself, pass it to `.chat(prompt, &history)`. You append user/assistant turns after each exchange.
-- **Managed memory**: build with `.memory(InMemoryConversationMemory::new())`, then scope each prompt with `.conversation(id)`. The ID isolates history per-user. Requires `.memory()` to be set — `.conversation()` has no effect without it.
-- `Message::user(str)` and `Message::assistant(str)` are the constructors for history entries.
+- `Agent<M>` wraps a completion model with a preamble, context, and tools. Build one with `client.agent(model).preamble(...).build()`.
+- Required imports: `rig::client::CompletionClient` (for `.agent()`), `rig::completion::Chat` (for `.chat()`), `rig::completion::Prompt` (for `.prompt()`).
+- **History management is your responsibility** — rig provides no automatic conversation store. Maintain a `Vec<Message>`, pass `&history` to `.chat()`, then push `Message::user(q)` and `Message::assistant(reply)` after each call.
+- `Message::user(text)` and `Message::assistant(text)` accept `impl Into<String>`.
+- **Streaming history**: use `stream_chat()` and call `fin.history()` on the `FinalResponse` to get the appended messages for that turn — `history.extend_from_slice(fin.history().unwrap_or_default())`.
 - Guardrails are manual: validate input before calling the agent; use an `Extractor<SafetyVerdict>` to classify output before returning it.
-- Streaming: `agent.stream_prompt(text).await` or `agent.stream_chat(text, &history).await` — iterate with `StreamExt::next()`, match `MultiTurnStreamItem::FinalResponse` for the complete response or `StreamAssistantItem` for incremental chunks.
+- Streaming: `agent.stream_chat(text, &history)` — iterate with `StreamExt::next()`, match `MultiTurnStreamItem::FinalResponse` for the complete response or `StreamAssistantItem` for incremental chunks.
 
 ---
 
@@ -4093,16 +4080,13 @@ In production: load history from a database before each call and use `.chat()`. 
 
 - [rig-core Agent docs](https://docs.rs/rig-core/latest/rig/agent/index.html) — `Agent`, `AgentBuilder`, `PromptRequest`
 - [rig-core Message docs](https://docs.rs/rig-core/latest/rig/message/index.html) — `Message` enum and constructors
-- [rig-core memory docs](https://docs.rs/rig-core/latest/rig/memory/index.html) — `InMemoryConversationMemory`
+- [rig-core streaming docs](https://docs.rs/rig-core/latest/rig/streaming/index.html) — `StreamingChat`, `FinalResponse::history()`
 - [Spring AI ChatClient advisors](https://docs.spring.io/spring-ai/reference/api/advisors.html) — Java reference: `MessageChatMemoryAdvisor`
 - [LangChain4j ChatMemory](https://docs.langchain4j.dev/tutorials/chat-memory) — Java reference: `MessageWindowChatMemory`
 
 ---
 
 *Next: Chapter 7 — Rig with Axum: Building a Streaming Web API*
-
----
-
 
 # Chapter 7: Rig with Axum — Building a Streaming Web API
 
@@ -4234,10 +4218,10 @@ This is the core of the chapter. Rig's `stream_prompt()` returns a `StreamingPro
 The chain is:
 
 ```
-agent.stream_prompt(text).conversation(id).await
+agent.stream_prompt(text).await
     → Pin<Box<dyn Stream<Item = Result<MultiTurnStreamItem, _>> + Send>>
 
-        ↓ map each StreamAssistantItem::Text → Event::default().data(text.text)
+        ↓ map each StreamAssistantItem::Text(chunk) → Event::default().data(chunk)
         ↓ on FinalResponse → Event::default().event("done").data("{}")
 
     → impl Stream<Item = Result<Event, Infallible>>
@@ -4266,22 +4250,17 @@ async fn sse_handler(agent: &openai::Agent, message: &str, conv_id: &str)
     let conv_id = conv_id.to_owned();
 
     tokio::spawn(async move {
-        let stream = match agent.stream_prompt(&message).conversation(&conv_id).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = tx.send(Ok(Event::default().event("error").data(e.to_string()))).await;
-                return;
-            }
-        };
+        // stream_prompt returns StreamingPromptRequest; awaiting it yields the stream
+        let mut stream = agent.stream_prompt(&message).await;
 
         tokio::pin!(stream);
 
         while let Some(item) = stream.next().await {
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => {
-                    if let StreamedAssistantContent::Text(text) = content {
-                        // text.text: String — the incremental text chunk
-                        let event = Event::default().data(text.text);
+                    // StreamedAssistantContent::Text(chunk) — chunk is the String directly
+                    if let StreamedAssistantContent::Text(chunk) = content {
+                        let event = Event::default().data(chunk);
                         if tx.send(Ok(event)).await.is_err() {
                             break; // Client disconnected
                         }
@@ -4306,7 +4285,7 @@ async fn sse_handler(agent: &openai::Agent, message: &str, conv_id: &str)
 
 ### Key Details
 
-**`StreamedAssistantContent::Text(text)`** — the `text` field is `text.text: String`, containing the incremental text chunk. Other variants (`ToolCall`, `ToolCallDelta`, `Reasoning`, `ReasoningDelta`, `Final`) are skipped in a plain chat endpoint.
+**`StreamedAssistantContent::Text(chunk)`** — the inner value is a `String` containing the incremental text. Other variants (`ToolCallDelta`, `FinalUsage`) are skipped in a plain chat endpoint.
 
 **`MultiTurnStreamItem` is `#[non_exhaustive]`** — always include a `_ => {}` arm. New variants may appear in future rig releases.
 
@@ -4361,7 +4340,9 @@ async fn chat_stream(
 
 ## 7.6 Session Management with `conversation_id`
 
-Multiple concurrent users can share one `Agent` instance because rig's managed memory is scoped by conversation ID. Each request carries a `conversation_id` that isolates its history from other users' conversations.
+Multiple concurrent users can share one `Agent` instance. Rig's `Agent` is stateless — it holds no conversation history itself. History management is the application's responsibility.
+
+Each request carries a `conversation_id` string that your application uses as a key to load and store history:
 
 ```rust
 #[derive(serde::Deserialize)]
@@ -4371,32 +4352,33 @@ struct ChatRequest {
 }
 ```
 
-The agent was built with `.memory(InMemoryConversationMemory::new())` at startup. Each call to `.conversation(&conv_id)` retrieves and stores history under that key:
+### In-Process History (for prototypes)
+
+For a single-instance service that doesn't need restart persistence, keep a `DashMap<String, Vec<Message>>` (or `Arc<Mutex<HashMap<String, Vec<Message>>>>`) in `AppState`:
 
 ```rust
-let stream = agent
-    .stream_prompt(&req.message)
-    .conversation(&req.conversation_id)  // scope history to this user
-    .await?;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use rig::completion::Message;
+
+struct AppState {
+    agent: openai::Agent,
+    // session_id → conversation history
+    sessions: Mutex<HashMap<String, Vec<Message>>>,
+}
 ```
 
-### Limitations of In-Process Memory
+Before each call: lock, clone the history for this session, unlock. After the stream completes: lock, extend with the new messages, unlock. This isolates each user's history without any external dependency.
 
-`InMemoryConversationMemory` stores all history in a `HashMap` inside the process. This means:
-
-- History is **lost on restart** — sessions don't survive deploys
-- Not shared across **multiple service instances** — incompatible with horizontal scaling
-- **Unbounded** — long conversations accumulate indefinitely
-
-For production, replace in-process memory with a database-backed store:
+### Production: External Storage
 
 | Approach | Description |
 |---|---|
-| **Managed memory** | rig's `InMemoryConversationMemory` — fine for prototypes and single-instance services |
-| **External cache** | Store `Vec<Message>` in Redis; serialize with `serde_json`; key by `conversation_id` |
-| **Database** | Persist messages in PostgreSQL; load the last N messages before each call with `.chat()` |
+| **In-process `HashMap`** | Simple, zero-dependency — lost on restart, not distributed |
+| **Redis** | `LRANGE`/`RPUSH` with `serde_json`; TTL-based expiry; key by `conversation_id` |
+| **PostgreSQL** | Full persistence; load last N messages per session before each call |
 
-The Redis approach: before each call, load history from Redis → call `.chat(prompt, history)` → append the new exchange → write back to Redis. This is the same manual history pattern from Chapter 6, just with Redis as the storage backend instead of an in-memory `Vec`.
+The pattern is always the same: load `Vec<Message>` → pass to `.stream_chat(prompt, &history)` → collect `FinalResponse::history()` → persist updated messages. Chapter 10 covers window sizing strategies to keep histories within model context limits.
 
 ---
 
@@ -4490,21 +4472,15 @@ async fn chat_stream(
     let conv_id = req.conversation_id.clone();
 
     tokio::spawn(async move {
-        let stream = match agent.stream_prompt(&message).conversation(&conv_id).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = tx.send(Ok(Event::default().event("error").data(e.to_string()))).await;
-                return;
-            }
-        };
+        let mut stream = agent.stream_prompt(&message).await;
 
         tokio::pin!(stream);
 
         while let Some(item) = stream.next().await {
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => {
-                    if let StreamedAssistantContent::Text(text) = content {
-                        let event = Event::default().data(text.text);
+                    if let StreamedAssistantContent::Text(chunk) = content {
+                        let event = Event::default().data(chunk);
                         if tx.send(Ok(event)).await.is_err() {
                             break;
                         }
@@ -4531,7 +4507,7 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
     let agent = client
         .agent(openai::GPT_4O_MINI)
         .preamble("You are a helpful Rust programming assistant.")
@@ -4636,7 +4612,7 @@ Axum extracts State<Arc<AppState>> + Json<ChatRequest>
     ↓
 chat_stream handler spawns a tokio task
     ↓
-Task: agent.stream_prompt(message).conversation(id).await
+Task: agent.stream_prompt(message).await
     → MultiTurnStreamItem stream
     → map Text chunks → mpsc channel
     ↓
@@ -4657,8 +4633,8 @@ In practice, this pattern is idiomatic in Axum SSE handlers and is how the offic
 
 For horizontal scaling (multiple service instances):
 
-1. Replace `InMemoryConversationMemory` with Redis-backed history storage
-2. Use `.chat(prompt, history)` instead of `.prompt().conversation(id)` — load history from Redis before each call, write it back after
+1. Replace the in-process `SessionStore` with Redis-backed history storage
+2. Use `.chat(prompt, &history)` — load history from Redis before each call, push turns and write back after
 3. Any instance can serve any request because conversation state is in Redis, not the process
 
 The `Agent` itself is stateless across requests — it's the memory that needs to be externalized.
@@ -4669,10 +4645,10 @@ The `Agent` itself is stateless across requests — it's the memory that needs t
 
 - Axum handlers are async functions; return types implement `IntoResponse`. `Sse<S>` is a built-in response type for Server-Sent Events.
 - Bridge rig streaming to Axum SSE with an `mpsc` channel + `tokio::spawn`: the task drives the rig stream; the `ReceiverStream` is handed to `Sse::new()`.
-- `MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))` — `t.text` is the incremental string chunk to send. `FinalResponse` signals the end.
+- `MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(chunk))` — `chunk` is a `String` (the incremental text). `FinalResponse` signals the end.
 - `Agent<M>: Clone` when `M: Clone` — `openai::Agent` can be cloned into `tokio::spawn` closures directly. No `Arc<Mutex<Agent>>` needed.
 - Share the agent across handlers via `Arc<AppState>` + `State<Arc<AppState>>` extractor. Router state is set with `.with_state(state)`.
-- `InMemoryConversationMemory` scoped by `conversation_id` handles multi-user sessions in a single process. For multi-instance deployments, externalize history to Redis or a database.
+- For multi-user sessions: hold a `Mutex<HashMap<String, Vec<Message>>>` in `AppState` (§7.6). For multi-instance deployments, externalize history to Redis.
 - `tower-http`'s `CorsLayer` handles CORS; add it last with `.layer(cors)` to apply to all routes.
 
 ---
@@ -4689,9 +4665,6 @@ The `Agent` itself is stateless across requests — it's the memory that needs t
 ---
 
 *Next: Chapter 8 — RAG: Retrieval-Augmented Generation*
-
----
-
 
 # Chapter 8: RAG — Retrieval-Augmented Generation
 
@@ -4810,7 +4783,7 @@ use rig::client::{CompletionClient, ProviderClient};
 use rig::embeddings::EmbeddingsBuilder;
 use rig::providers::openai;
 
-let client = openai::Client::from_env()?;
+let client = openai::Client::from_env();
 
 // Create the embedding model.
 // TEXT_EMBEDDING_3_SMALL: 1536 dimensions, fast, cost-effective for retrieval.
@@ -5148,7 +5121,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
     let embedding_model = client.embedding_model(openai::TEXT_EMBEDDING_3_SMALL);
 
     println!("Embedding {} documents...", sample_corpus().len());
@@ -5278,9 +5251,6 @@ A 20% overlap is a common starting point.
 ---
 
 *Next: Chapter 9 — Swiftide: Streaming Indexing Pipelines*
-
----
-
 
 # Chapter 9: Swiftide — Streaming Indexing Pipelines
 
@@ -5780,15 +5750,10 @@ This chapter focused on building the index. Chapter 10 turns to memory: how agen
 
 *→ Java reference: "DocumentTransformer / EmbeddingStore ingestion pipeline" (LangChain4j); Spring AI ETL pipeline (`DocumentReader`, `DocumentTransformer`, `VectorStore`)*
 
----
-
-
 # Chapter 10: Memory and State in Rust Agents
 
 > **Framework versions in this chapter:**  
-> `rig-core = "0.37"` — memory module added in 0.37; `chat()` signature changed  
-> `rig-memory = "0.1"` — `SlidingWindowMemory`, `TokenWindowMemory` policies  
-> `tokio = "1"`, `anyhow = "1"`, `dotenvy = "0.15"`
+> `rig-core = "0.37"` · `tokio = "1"` · `anyhow = "1"` · `dotenvy = "0.15"`
 >
 > **Java reference:** LangChain4j `ChatMemory`, `MessageWindowChatMemory`, `TokenWindowChatMemory`; Spring AI `MessageChatMemoryAdvisor`, `InMemoryChatMemory`
 
@@ -5798,11 +5763,11 @@ An agent that cannot remember previous turns is not an assistant — it's a calc
 
 But memory is also a resource. LLMs have finite context windows. Every message in history costs tokens, and tokens cost money and latency. Unbounded memory eventually fails; bounded memory must evict something. Deciding *what* to evict, *when*, and *how* to compensate is one of the core design decisions in agent architecture.
 
-This chapter covers three memory patterns in rig-core 0.37:
+This chapter covers three memory patterns:
 
 1. **Manual `Vec<Message>`** — you manage history explicitly; most flexible, most code
-2. **`InMemoryConversationMemory`** — rig manages per-conversation history; less code, same process only
-3. **Policy-based history shaping** (`rig-memory`) — sliding window and token budget keep history bounded
+2. **In-process session store** — a `HashMap<String, Vec<Message>>` per session ID; zero dependencies, suitable for single-server services
+3. **Sliding-window truncation** — a small helper function that keeps only the last N messages, preventing unbounded growth
 
 ---
 
@@ -5851,34 +5816,40 @@ ChatClient client = ChatClient.builder(chatModel)
     .build();
 ```
 
-In rig 0.37, the three patterns below cover the same ground.
+In rig, the three patterns below cover the same ground.
 
 ---
 
 ## 10.2 Pattern 1 — Manual `Vec<Message>`
 
-The simplest pattern gives you total control: you hold a `Vec<Message>` and pass it to every `chat()` call.
+The simplest pattern gives you total control: hold a `Vec<Message>` and pass it to every `chat()` call.
 
 ```rust
-use rig::message::Message;
+use rig::client::{CompletionClient, ProviderClient};
+use rig::completion::Chat;
+use rig::completion::Message;
+use rig::providers::openai;
 
-let mut history: Vec<Message> = Vec::new();
-
-let agent = client
+let agent = openai::Client::from_env()
     .agent(openai::GPT_4O_MINI)
     .preamble("You are a helpful assistant.")
     .build();
 
-// Turn 1 — history starts empty
-let r1 = agent.chat("My name is Alice.", &mut history).await?;
-// history = [User("My name is Alice."), Assistant(r1)]
+let mut history: Vec<Message> = Vec::new();
 
-// Turn 2 — history carries the previous exchange
-let r2 = agent.chat("What's my name?", &mut history).await?;
-// history = [User("My name..."), Assistant(r1), User("What's my name?"), Assistant(r2)]
+// Turn 1 — pass history by immutable reference; chat() does not mutate it
+let r1 = agent.chat("My name is Alice.", &history).await?;
+// Now push both turns manually
+history.push(Message::user("My name is Alice."));
+history.push(Message::assistant(r1.as_str()));
+
+// Turn 2 — history now carries the previous exchange
+let r2 = agent.chat("What's my name?", &history).await?;
+history.push(Message::user("What's my name?"));
+history.push(Message::assistant(r2.as_str()));
 ```
 
-**What changed in rig-core 0.37:** `chat()` now takes `&mut Vec<Message>` (not an immutable iterator). It appends both the user message and the assistant response automatically after each call. You no longer push messages manually.
+`chat()` accepts `impl IntoIterator<Item: Into<Message>>`. Passing `&history` works because `&Vec<T>` implements `IntoIterator`. The method does **not** mutate history — you push turns yourself.
 
 ### When to use manual history
 
@@ -5891,7 +5862,7 @@ let r2 = agent.chat("What's my name?", &mut history).await?;
 `Message` derives `serde::Serialize` and `serde::Deserialize`, so you can persist history trivially:
 
 ```rust
-use rig::message::Message;
+use rig::completion::Message;
 use std::fs;
 
 // Save after each turn
@@ -5907,232 +5878,190 @@ This is the foundation of simple persistence: write JSON to disk (or a `TEXT` co
 
 ---
 
-## 10.3 Pattern 2 — `InMemoryConversationMemory`
+## 10.3 Pattern 2 — In-Process Session Store
 
-Manual history is powerful but verbose. When all you need is "keep history for this conversation in process memory", rig-core 0.37 provides a built-in backend.
+When you need one agent to serve many concurrent users, wrapping a `HashMap<String, Vec<Message>>` in a `Mutex` gives you isolated per-session history with no external dependencies.
 
 ```rust
-use rig::memory::InMemoryConversationMemory;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use rig::completion::Message;
 
-let memory = InMemoryConversationMemory::new();
+struct SessionStore {
+    sessions: Mutex<HashMap<String, Vec<Message>>>,
+}
 
-let agent = client
-    .agent(openai::GPT_4O_MINI)
-    .preamble("You are a helpful assistant.")
-    .memory(memory)
-    .build();
+impl SessionStore {
+    fn new() -> Self {
+        Self { sessions: Mutex::new(HashMap::new()) }
+    }
 
-// Use .conversation(id) to scope history per user/session
-let r1 = agent
-    .prompt("Hi, I'm Alice.")
-    .conversation("alice-42")
-    .await?;
+    fn load(&self, id: &str) -> Vec<Message> {
+        self.sessions.lock().unwrap()
+            .get(id).cloned().unwrap_or_default()
+    }
 
-let r2 = agent
-    .prompt("What's my name?")
-    .conversation("alice-42")
-    .await?;
-// r2 correctly refers back to "Alice"
+    fn save(&self, id: &str, history: Vec<Message>) {
+        self.sessions.lock().unwrap().insert(id.to_string(), history);
+    }
+}
 ```
 
-The agent loads history for `"alice-42"` before processing, appends the new exchange, and stores it back — all transparently. Your code only specifies the conversation ID.
-
-### Multiple conversations on one agent
-
-The key advantage over manual history: a single agent instance handles many concurrent users, each with their own isolated history.
+Usage per request:
 
 ```rust
-// Two users, same agent, different conversation IDs
-let _ = agent.prompt("My favourite language is Haskell.").conversation("bob-1").await?;
-let _ = agent.prompt("I prefer Lisp.").conversation("carol-2").await?;
+// Agent<M>: Chat when M: CompletionModel + 'static.
+// A generic bound accepts any agent regardless of provider:
+async fn handle<M: rig::completion::CompletionModel + 'static>(
+    agent: &rig::agent::Agent<M>,
+    store: &SessionStore,
+    session_id: &str,
+    prompt: &str,
+) -> anyhow::Result<String> {
+    let history = store.load(session_id);
+    let reply = agent.chat(prompt, &history).await?;
 
-// Each user's history is completely isolated
-let r = agent.prompt("What's my favourite language?").conversation("bob-1").await?;
+    let mut updated = history;
+    updated.push(Message::user(prompt));
+    updated.push(Message::assistant(reply.as_str()));
+    store.save(session_id, updated);
+
+    Ok(reply)
+}
+```
+
+Two users with isolated histories on one agent:
+
+```rust
+let store = SessionStore::new();
+handle(&agent, &store, "alice", "My favourite language is Haskell.").await?;
+handle(&agent, &store, "bob",   "I prefer Lisp.").await?;
+
+let r = handle(&agent, &store, "alice", "What's my favourite language?").await?;
 // → "Your favourite language is Haskell."
-```
-
-This is what LangChain4j achieves with a separate `ChatMemory` instance per user. In rig, one `InMemoryConversationMemory` handles all users — the ID is the key.
-
-### Opting out of memory for a single request
-
-Sometimes you want a one-off question without polluting the conversation history:
-
-```rust
-let r = agent
-    .prompt("What year is it?")
-    .without_memory()  // not recorded; not loaded
-    .await?;
 ```
 
 ### Limitations
 
-`InMemoryConversationMemory` stores everything in a `HashMap` inside the process. It disappears when the process exits. For durability across restarts, you need a persistent backend — Section 10.5 covers the pattern.
+The `SessionStore` lives inside the process. It disappears on restart and is not shared across multiple service instances. For durability, use JSON-on-disk or SQLite (§10.7).
+
+> **Java parallel:** This pattern is equivalent to maintaining a `Map<String, ChatMemory>` in LangChain4j and looking up the right `ChatMemory` by session ID per request. Spring AI does the same with `InMemoryChatMemory` scoped by a conversation ID.
 
 ---
 
-## 10.4 The `ConversationMemory` Trait
+## 10.4 Custom Storage Backends
 
-Both `InMemoryConversationMemory` (rig-core) and any custom backend implement the `ConversationMemory` trait from `rig::memory`:
-
-```rust
-pub trait ConversationMemory: Send + Sync {
-    async fn load(&self, conversation_id: &str) -> Result<Vec<Message>>;
-    async fn append(&self, conversation_id: &str, messages: Vec<Message>) -> Result<()>;
-    async fn clear(&self, conversation_id: &str) -> Result<()>;
-}
-```
-
-This is the extension point for custom backends. A Redis-backed implementation:
+The `SessionStore` in §10.3 is an in-process pattern. For a Redis- or database-backed equivalent, define your own `load` / `save` abstraction. Rig doesn't provide a `ConversationMemory` trait — you implement the pattern yourself. Here is a Redis example that follows the same load-chat-push-save contract:
 
 ```rust
-use rig::memory::ConversationMemory;
-use rig::message::Message;
+// redis = "0.27" in Cargo.toml
+use redis::AsyncCommands;
+use rig::completion::Message;
 
-pub struct RedisMemory {
+pub struct RedisSessionStore {
     client: redis::Client,
     ttl_secs: usize,
 }
 
-impl ConversationMemory for RedisMemory {
-    async fn load(&self, id: &str) -> anyhow::Result<Vec<Message>> {
-        let mut conn = self.client.get_async_connection().await?;
-        let raw: Option<String> = redis::cmd("GET").arg(id).query_async(&mut conn).await?;
+impl RedisSessionStore {
+    pub async fn load(&self, id: &str) -> anyhow::Result<Vec<Message>> {
+        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let raw: Option<String> = conn.get(id).await?;
         match raw {
             Some(json) => Ok(serde_json::from_str(&json)?),
             None => Ok(Vec::new()),
         }
     }
 
-    async fn append(&self, id: &str, messages: Vec<Message>) -> anyhow::Result<()> {
-        let mut conn = self.client.get_async_connection().await?;
-        // Load, merge, save
-        let mut history = self.load(id).await?;
-        history.extend(messages);
-        let json = serde_json::to_string(&history)?;
-        redis::cmd("SETEX")
-            .arg(id).arg(self.ttl_secs).arg(json)
-            .query_async(&mut conn).await?;
-        Ok(())
-    }
-
-    async fn clear(&self, id: &str) -> anyhow::Result<()> {
-        let mut conn = self.client.get_async_connection().await?;
-        redis::cmd("DEL").arg(id).query_async(&mut conn).await?;
+    pub async fn save(&self, id: &str, history: &[Message]) -> anyhow::Result<()> {
+        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let json = serde_json::to_string(history)?;
+        conn.set_ex(id, json, self.ttl_secs).await?;
         Ok(())
     }
 }
 ```
 
-Attach it to an agent exactly like the built-in backend:
+Usage is identical to the in-process `SessionStore` — load, chat, push, save:
 
 ```rust
-let memory = RedisMemory { client, ttl_secs: 3600 };
-let agent = client.agent(openai::GPT_4O_MINI)
-    .memory(memory)
-    .build();
+let history = redis_store.load(session_id).await?;
+let reply = agent.chat(prompt, &history).await?;
+let mut updated = history;
+updated.push(Message::user(prompt));
+updated.push(Message::assistant(reply.as_str()));
+redis_store.save(session_id, &updated).await?;
 ```
 
-### Java comparison
-
-LangChain4j's `ChatMemoryStore` interface is structurally identical:
-
-```java
-public interface ChatMemoryStore {
-    List<ChatMessage> getMessages(Object memoryId);
-    void updateMessages(Object memoryId, List<ChatMessage> messages);
-    void deleteMessages(Object memoryId);
-}
-```
-
-The `ConversationMemory` trait is Rust's version of the same contract.
+> **Java parallel:** LangChain4j's `ChatMemoryStore` interface has `getMessages`, `updateMessages`, and `deleteMessages`. The Redis implementation above covers the same three operations — rig just doesn't prescribe a formal trait for them.
 
 ---
 
-## 10.5 Pattern 3 — Bounded History with `rig-memory`
+## 10.5 Pattern 3 — Bounded History
 
-The previous patterns let history grow without limit. That's fine for short conversations, but will eventually:
-- Exceed the model's context window (hard failure)
-- Inflate cost and latency on every turn (soft failure)
+The previous patterns let history grow without limit. That's fine for short conversations, but will eventually exceed the model's context window or inflate per-turn cost. The fix is simple: slice history before passing it to `chat()`.
 
-The `rig-memory` crate provides **memory policies** — functions that transform history before it is sent to the model:
+### Sliding-window truncation
+
+```rust
+/// Keep only the most recent `max_messages` from `history`.
+fn sliding_window(history: &[Message], max_messages: usize) -> Vec<Message> {
+    if history.len() <= max_messages {
+        history.to_vec()
+    } else {
+        history[history.len() - max_messages..].to_vec()
+    }
+}
+```
+
+Usage:
+
+```rust
+const WINDOW: usize = 20; // 10 turns
+
+let windowed = sliding_window(&history, WINDOW);
+let reply = agent.chat(prompt, &windowed).await?;
+history.push(Message::user(prompt));
+history.push(Message::assistant(reply.as_str()));
+```
+
+The full history `Vec` still grows (useful if you later want to persist or summarise it), but only the last `WINDOW` messages are sent to the model on each call.
+
+### Token-aware truncation
+
+When messages vary widely in length (e.g. code blocks alongside short replies), a message count is a coarse proxy for tokens. A rough heuristic: estimate 1 token ≈ 4 characters of English text, or use `tiktoken-rs` for exact OpenAI counts:
 
 ```toml
-[dependencies]
-rig-memory = "0.1"
+# tiktoken-rs = "0.5"  (add to Cargo.toml if needed)
 ```
-
-### `SlidingWindowMemory`
-
-Keeps the most recent `n` messages, discarding older ones:
 
 ```rust
-use rig_memory::{InMemoryConversationMemory, SlidingWindowMemory};
-
-// Keep last 20 messages (10 turns)
-let memory = InMemoryConversationMemory::new()
-    .with_filter(SlidingWindowMemory::new(20));
-
-let agent = client
-    .agent(openai::GPT_4O_MINI)
-    .preamble("You are a helpful assistant.")
-    .memory(memory)
-    .build();
+// Heuristic token budget — drop oldest messages until under budget.
+// Serialises each message to JSON to measure its approximate byte size.
+fn token_window(history: &[Message], max_chars: usize) -> Vec<Message> {
+    let mut kept: Vec<&Message> = Vec::new();
+    let mut total = 0usize;
+    for msg in history.iter().rev() {
+        // JSON length is a reasonable proxy for token count (1 token ≈ 4 chars)
+        let len = serde_json::to_string(msg).unwrap_or_default().len();
+        if total + len > max_chars { break; }
+        total += len;
+        kept.push(msg);
+    }
+    kept.into_iter().rev().cloned().collect()
+}
 ```
-
-> **Note:** `rig_memory::InMemoryConversationMemory` (from the `rig-memory` crate) is the policy-aware variant. It shares the same logical purpose as `rig::memory::InMemoryConversationMemory` (from rig-core) but adds the `.with_filter()` method. Use the `rig-memory` variant when you need a policy; use the rig-core variant for simple in-memory storage.
-
-### `TokenWindowMemory`
-
-Keeps messages that fit within a token budget, using a heuristic counter that requires no external API call:
-
-```rust
-use rig_memory::{
-    InMemoryConversationMemory, TokenWindowMemory,
-    HeuristicTokenCounter, TokenCounterPreset,
-};
-
-// Keep messages within 8192 tokens (OpenAI preset)
-let counter = HeuristicTokenCounter::new(TokenCounterPreset::OpenAI);
-let memory = InMemoryConversationMemory::new()
-    .with_filter(TokenWindowMemory::new(8192, counter));
-
-let agent = client
-    .agent(openai::GPT_4O_MINI)
-    .preamble("You are a helpful assistant.")
-    .memory(memory)
-    .build();
-```
-
-`TokenWindowMemory` is preferable to `SlidingWindowMemory` when conversations have variable message sizes — a long code block in one message can consume more tokens than twenty short exchanges.
 
 ### Choosing a budget
 
-A practical rule of thumb for `gpt-4o-mini` (128k context window):
-- Reserve ~4k tokens for the system prompt and tool schemas
+Rule of thumb for `gpt-4o-mini` (128k context):
+- Reserve ~4k tokens for system prompt + tool schemas
 - Reserve ~4k tokens for the response
-- Budget ~8k–16k for conversation history
-
-```rust
-// Leaves ~16k for system prompt + response
-let memory = InMemoryConversationMemory::new()
-    .with_filter(TokenWindowMemory::new(16_384, counter));
-```
+- Budget ~8k–16k tokens (≈32k–64k chars) for conversation history
 
 ### Java comparison
 
-LangChain4j's `MessageWindowChatMemory` and `TokenWindowChatMemory` are direct parallels:
-
-```java
-// LangChain4j — message window
-ChatMemory memory = MessageWindowChatMemory.withMaxMessages(20);
-
-// LangChain4j — token window
-ChatMemory memory = TokenWindowChatMemory.builder()
-    .maxTokens(8192, tokenizer)
-    .build();
-```
-
-The rig-memory API follows the same mental model: window type + size + optional tokenizer.
+LangChain4j's `MessageWindowChatMemory.withMaxMessages(n)` and `TokenWindowChatMemory` apply the same truncation strategy. In Rust there is no framework magic — the truncation is a plain function applied to your `Vec<Message>` before each call. This makes the behaviour explicit and testable.
 
 ---
 
@@ -6140,32 +6069,52 @@ The rig-memory API follows the same mental model: window type + size + optional 
 
 When old messages are evicted by a sliding window, context is permanently lost. For long-running agents — personal assistants, support bots, research agents — losing early context is unacceptable.
 
-**Compaction** replaces evicted messages with a summary instead of discarding them. The `rig-memory` crate provides `CompactingMemory` for this:
+**Compaction** replaces evicted messages with a summary instead of discarding them. Rig doesn't provide a built-in compactor, but the pattern is straightforward to implement using your rig agent itself:
 
 ```rust
-use rig_memory::{
-    CompactingMemory, DemotingPolicyMemory,
-    SlidingWindowMemory, TemplateCompactor,
-};
+use rig::completion::Prompt;
+use rig::completion::Message;
 
-// TemplateCompactor produces plain-text rollups without an LLM call.
-// For LLM-driven summaries, implement the Compactor trait yourself.
-let compactor = TemplateCompactor::default();
-let memory = CompactingMemory::new(
-    SlidingWindowMemory::new(20),
-    compactor,
-);
+/// Summarise `to_evict` messages using the agent, then return a single
+/// "Earlier in this conversation: …" message as their replacement.
+async fn compact(
+    agent: &impl rig::completion::Prompt,
+    to_evict: &[Message],
+) -> anyhow::Result<Message> {
+    // Serialise to JSON for the prompt — Message implements Serialize
+    let history_json = serde_json::to_string_pretty(to_evict)
+        .unwrap_or_else(|_| "[history unavailable]".to_string());
+    let summary_prompt = format!(
+        "Summarise the following conversation history in 2-3 sentences, \
+         capturing the key facts for future reference:\n\n{history_json}"
+    );
+    let summary = agent.prompt(&summary_prompt).await?;
+    Ok(Message::user(format!("Earlier in this conversation: {summary}")))
+}
+
+/// Apply a sliding window with compaction: evict old messages as a summary.
+async fn compact_window(
+    agent: &impl rig::completion::Prompt,
+    history: &mut Vec<Message>,
+    max_messages: usize,
+) -> anyhow::Result<()> {
+    if history.len() > max_messages {
+        let eviction_count = history.len() - max_messages;
+        let to_evict = history[..eviction_count].to_vec();
+        let summary = compact(agent, &to_evict).await?;
+        history.drain(..eviction_count);
+        history.insert(0, summary);
+    }
+    Ok(())
+}
 ```
 
-The compaction flow:
-1. History grows beyond the window
-2. The policy identifies messages to evict
-3. The compactor synthesises a summary message: `"Earlier in this conversation: …"`
-4. The summary replaces the evicted messages in the active window
+The flow:
+1. History grows beyond `max_messages`
+2. Evicted messages are summarised into one `Message::user("Earlier in this conversation: …")`
+3. The summary is prepended; the agent always sees a compact history *plus* a digest of earlier context
 
-The agent always sees a compact history that fits the window *and* retains a summary of earlier context.
-
-> **When to compact:** compaction makes most sense for persistent personal assistants (session that resumes across days/weeks). For session-scoped support bots or API handlers, a simple `SlidingWindowMemory` is usually sufficient.
+> **When to compact:** for persistent personal assistants that resume across sessions. For session-scoped API handlers, plain `sliding_window()` is simpler and sufficient. Compaction adds one LLM call per eviction cycle.
 
 ---
 
@@ -6177,7 +6126,7 @@ Suitable for single-user applications or prototypes:
 
 ```rust
 use std::path::Path;
-use rig::message::Message;
+use rig::completion::Message;
 
 async fn load_history(path: &str) -> Vec<Message> {
     if Path::new(path).exists() {
@@ -6196,7 +6145,10 @@ async fn save_history(path: &str, history: &[Message]) -> anyhow::Result<()> {
 
 // Usage
 let mut history = load_history("session.json").await;
-let response = agent.chat("Continue where we left off.", &mut history).await?;
+let prompt = "Continue where we left off.";
+let response = agent.chat(prompt, &history).await?;
+history.push(Message::user(prompt));
+history.push(Message::assistant(response.as_str()));
 save_history("session.json", &history).await?;
 ```
 
@@ -6210,7 +6162,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "json"] }
 
 ```rust
 use sqlx::SqlitePool;
-use rig::message::Message;
+use rig::completion::Message;
 
 async fn load_history(pool: &SqlitePool, conv_id: &str) -> anyhow::Result<Vec<Message>> {
     let row = sqlx::query!(
@@ -6243,9 +6195,9 @@ async fn save_history(
 }
 ```
 
-### Implementing `ConversationMemory` on top of SQLite
+### Using SQLite with the session pattern
 
-Wrap the SQLite functions in a struct that implements `ConversationMemory` (Section 10.4) and attach it to the agent with `.memory()`. This gives you the ergonomics of managed memory with durable storage.
+Wrap these functions in a struct following the same load-chat-push-save contract from §10.4. The agent code doesn't change — only the storage backend does.
 
 ---
 
@@ -6276,7 +6228,7 @@ Agent: Your name is Alice.
 
 ────────────────────────────────────────────────
 
-━━━ Pattern 2: InMemoryConversationMemory ━━━
+━━━ Pattern 2: In-process session store ━━━
 
 [Alice] Turn 1: Hello Alice! I'll keep my answers concise.
 [Bob]   Turn 1: Hello! Haskell is an excellent language.
@@ -6287,11 +6239,12 @@ Agent: Your name is Alice.
 
 ━━━ Pattern 3: Sliding-window (last 4 messages) ━━━
 
-Turn 1: established project name 'Titan'
-Turn 2: added storage detail
-Turn 3: added deployment detail (window now at 4 messages)
+Turn 1: established project name 'Titan' (history: 2 msgs)
+Turn 2: added storage detail (history: 4 msgs)
+Turn 3: added deployment detail (history: 6 msgs, window passes last 4)
+(Sending 4 messages to model — Turn 1 excluded)
 Turn 4 (project name query): I don't have that information in our conversation.
-(Expected: agent cannot recall 'Titan' — it was evicted from the window)
+(Expected: agent cannot recall 'Titan' — it was outside the window)
 ```
 
 ### Walkthrough: sliding window
@@ -6317,14 +6270,14 @@ This demonstrates that sliding-window memory is **not transparent** to the user.
 | Scenario | Recommended Pattern |
 |----------|---------------------|
 | Stateless API — history sent on each request | Manual `Vec<Message>` |
-| Single-server multi-user bot, no durability needed | `InMemoryConversationMemory` |
-| Long conversations — must control context window cost | `SlidingWindowMemory` or `TokenWindowMemory` |
-| Long-running personal assistant — can't lose early context | `CompactingMemory` |
-| Multi-server deployment — must survive restart | Custom `ConversationMemory` over Redis/SQLite |
+| Single-server multi-user bot, no durability needed | In-process `SessionStore` (§10.3) |
+| Long conversations — control context window cost | `sliding_window()` helper (§10.5) |
+| Long-running personal assistant — preserve early context | Manual compaction with summarisation (§10.6) |
+| Multi-server deployment — must survive restart | Redis or SQLite backend (§10.4, §10.7) |
 | Semantic recall — "what did we say about X?" | `dynamic_context` + vector store (Chapter 8) |
 
 The last row is important: conversational memory and RAG memory are **orthogonal**. A production agent often uses both:
-- `InMemoryConversationMemory` or `SlidingWindowMemory` for recent turn history
+- A `SessionStore` or sliding-window for recent turn history
 - A vector index (Chapter 8's `dynamic_context`) for long-term semantic search over past exchanges or documents
 
 ---
@@ -6332,14 +6285,13 @@ The last row is important: conversational memory and RAG memory are **orthogonal
 ## 10.10 Key Takeaways
 
 - **LLM memory is faked** — every call re-sends prior messages; the model has no persistent state.
-- **`Agent::chat(prompt, &mut Vec<Message>)`** (rig-core 0.37) — auto-appends both turns; no manual push.
-- **`InMemoryConversationMemory`** (rig-core) — zero-config per-conversation storage; use `.conversation(id)` to scope by user.
-- **`.without_memory()`** — opt out of memory for a single request without changing the agent's configuration.
-- **`SlidingWindowMemory` / `TokenWindowMemory`** (rig-memory crate) — bounded history; use `.with_filter()` on the policy-aware `InMemoryConversationMemory` from `rig-memory`.
-- **`CompactingMemory`** — replaces evicted messages with a summary; preserves early context at the cost of an extra LLM call.
-- **Custom `ConversationMemory`** — implement three async methods (`load`, `append`, `clear`) to use any storage backend.
-- **`Message` is serializable** — `Vec<Message>` can be round-tripped through `serde_json` for any persistence layer.
-- **`rig-memory` vs rig-core memory** — use `rig::memory::InMemoryConversationMemory` for simple storage; use `rig_memory::InMemoryConversationMemory` (from the `rig-memory` crate) when you need a policy.
+- **`Agent::chat(prompt, &history)`** — takes `impl IntoIterator<Item: Into<Message>>`; pass `&Vec<Message>`. Does NOT mutate history — push user + assistant turns yourself after each call.
+- **Manual push**: `history.push(Message::user(q)); history.push(Message::assistant(reply.as_str()));`
+- **In-process `SessionStore`** — `Mutex<HashMap<String, Vec<Message>>>` gives multi-user isolation with no external dependencies; lost on restart.
+- **`sliding_window(history, n)`** — a plain function that returns the last `n` messages; pass the result to `chat()` to bound context cost.
+- **Compaction** — summarise evicted messages into a digest using the agent itself; insert as a `Message::user("Earlier…")` at the front.
+- **`Message` is serializable** — `Vec<Message>` round-trips through `serde_json`; persistence is just `to_string` + `from_str`.
+- **Persistence = load → chat → push → save** — the same three-line pattern works regardless of whether the backend is a local `HashMap`, JSON file, SQLite, or Redis.
 
 ---
 
@@ -6350,9 +6302,6 @@ This chapter gave you the memory primitives. Chapter 11 moves to MCP — the Mod
 ---
 
 *→ Java reference: LangChain4j `ChatMemory`, `MessageWindowChatMemory`, `TokenWindowChatMemory`, `ChatMemoryStore`; Spring AI `MessageChatMemoryAdvisor`, `InMemoryChatMemory`*
-
----
-
 
 # Chapter 11: MCP — Model Context Protocol in Rust
 
@@ -6814,9 +6763,6 @@ This chapter showed how to expose tools via a standard protocol. Part IV shifts 
 
 *→ Java reference: Spring AI `spring-ai-mcp-server-spring-boot-starter` and `spring-ai-mcp-client-spring-boot-starter`; Claude Desktop MCP configuration*
 
----
-
-
 # Chapter 12: Graph-Based Workflows with graph-flow
 
 > **Framework versions in this chapter:**  
@@ -7116,9 +7062,6 @@ Chapter 13 builds a ReAct agent inside graph-flow: the graph has a Think node th
 
 *→ Java reference: LangGraph4j `StateGraph`, `NodeAction`, `EdgeAction` (Ch 15–16 of Java book)*
 
----
-
-
 # Chapter 13: Building Agents with graph-flow
 
 > **Framework versions in this chapter:**  
@@ -7377,9 +7320,6 @@ Chapter 14 covers persistence: how to wire `PostgresSessionStorage`, add checkpo
 ---
 
 *→ Java reference: LangGraph4j `ReactAgent`, custom `StateGraph` with tool node (Ch 16)*
-
----
-
 
 # Chapter 14: Stateful Workflows and Persistence
 
@@ -7678,9 +7618,6 @@ Chapter 15 steps back from graph-flow and covers multi-agent systems with AutoAg
 ---
 
 *→ Java reference: LangGraph4j `MemorySaver`, `PostgresSaver`, `interrupt_before`, human-in-the-loop `Command(resume=value)` (Ch 17)*
-
----
-
 
 # Chapter 15: Multi-Agent Systems with AutoAgents
 
@@ -7998,9 +7935,6 @@ Part IV is complete. Part V covers production: Chapter 16 adds structured loggin
 
 *→ Java reference: LangGraph4j multi-agent supervisor, `CompiledGraph.stream()`, parallel subgraph (Ch 18)*
 
----
-
-
 # Chapter 16: Observability, Security, and Cost
 
 > **Framework versions in this chapter:**  
@@ -8201,7 +8135,7 @@ use rig::completion::CompletionRequestBuilder;
 let model = client.completion_model(openai::GPT_4O_MINI);
 // Use the builder — avoids depending on CompletionRequest's private struct fields
 let request = CompletionRequestBuilder::new(
-    rig::message::Message::user("What is the capital of France?"),
+    rig::completion::Message::user("What is the capital of France?"),
 )
 .build();
 
@@ -8415,9 +8349,6 @@ Chapter 17 covers deployment: how a Rust binary compiles to 5–30 MB (vs 200 MB
 ---
 
 *→ Java reference: Spring Boot Actuator, Micrometer, OpenTelemetry Java agent, Spring AI token usage (Ch 22)*
-
----
-
 
 # Chapter 17: Deployment — The Rust Advantage
 
@@ -8732,10 +8663,10 @@ Rust's low memory footprint means you can run more replicas per node than an equ
 
 ### Stateful scale-out
 
-For stateful agents (rig's `InMemoryConversationMemory`, in-process vector stores), you need sticky sessions or shared external state:
+For stateful agents using in-process session stores or in-memory vector stores, you need sticky sessions or shared external state:
 
 - **Sticky sessions** — route all requests from a user to the same pod (simple but limits flexibility)
-- **Redis-backed memory** — implement `ConversationMemory` over Redis (Chapter 10 §10.4) — any pod can serve any user
+- **Redis-backed session store** — load/save `Vec<Message>` via Redis (Chapter 10 §10.4) — any pod can serve any user
 - **graph-flow + PostgreSQL** — sessions in PostgreSQL; any pod can resume any session (Chapter 14)
 
 ### Backpressure
@@ -8808,9 +8739,6 @@ Chapter 18 steps back for a framework comparison: when to use rig vs swiftide vs
 ---
 
 *→ Java reference: Spring Boot fat JAR, Docker Jib, GraalVM native image, Lambda SnapStart (Ch 23)*
-
----
-
 
 # Chapter 18: Comparing All Three Frameworks + What's Next
 
@@ -8984,7 +8912,7 @@ Every framework in this book is pre-1.0. That's not a reason to avoid Rust for p
 
 ### Risk: breaking changes between minor versions
 
-rig-core 0.37 introduced a breaking change in `Agent::chat()` (the signature changed from `impl IntoIterator` to `&mut Vec<Message>`). This is normal for pre-1.0 crates.
+Pre-1.0 crates can introduce breaking API changes between minor versions — for example, changes to method signatures or removal of features. This is normal for active pre-1.0 projects.
 
 **Mitigation:**
 - Pin exact versions in `Cargo.lock` and commit it
@@ -9094,9 +9022,6 @@ Chapter 19 puts everything together in a capstone project: a full research agent
 ---
 
 *→ Java reference: Spring AI vs LangChain4j vs LangGraph4j comparison (Ch 20)*
-
----
-
 
 # Chapter 19: Capstone — Building a Research Agent
 
@@ -9357,7 +9282,7 @@ The MCP server entry point:
 
 ```rust
 let server = ResearchServer {
-    client: std::sync::Arc::new(openai::Client::from_env()?),
+    client: std::sync::Arc::new(openai::Client::from_env()),
 };
 let service = server.serve(stdio()).await?;
 service.waiting().await?;
@@ -9384,7 +9309,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let rig_client = openai::Client::from_env()?;
+    let rig_client = openai::Client::from_env();
     let swiftide_client = SwiftideOpenAI::builder()
         .default_embed_model("text-embedding-3-small")
         .default_prompt_model("gpt-4o-mini")
@@ -9527,9 +9452,6 @@ Chapter 20 builds the second capstone: a stateful multi-agent pipeline that proc
 ---
 
 *→ Java reference: LangChain4j + Spring AI + Spring Boot end-to-end research agent (Ch 21)*
-
----
-
 
 # Chapter 20: Capstone — Building a Multi-Agent Pipeline
 
@@ -9788,7 +9710,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = Arc::new(openai::Client::from_env()?);
+    let client = Arc::new(openai::Client::from_env());
     let storage = Arc::new(InMemorySessionStorage::new());
     let runner = FlowRunner::new(Arc::new(build_pipeline(client)), storage);
 
@@ -10017,9 +9939,6 @@ Chapter 21 closes the book with the production checklist: performance profiling,
 
 *→ Java reference: LangGraph4j multi-agent stateful pipeline with PostgreSQL checkpointing (Ch 22)*
 
----
-
-
 # Chapter 21: The Production-Ready Rust AI Agent
 
 > **Framework versions in this chapter:**  
@@ -10089,7 +10008,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
     use rig::completion::CompletionRequestBuilder;
     // Cheap API probe — just check auth works
     let probe = CompletionRequestBuilder::new(
-        rig::message::Message::user("ping"),
+        rig::completion::Message::user("ping"),
     ).max_tokens(1).build();
 
     match state.openai_client.completion_model(openai::GPT_4O_MINI)
@@ -10236,7 +10155,7 @@ struct AppState {
 impl AppState {
     fn new(config: &Config) -> anyhow::Result<Self> {
         let client = Arc::new(
-            rig::providers::openai::Client::from_env()?
+            rig::providers::openai::Client::from_env()
         );
         let quota   = Quota::per_second(
             std::num::NonZeroU32::new(config.rate_limit_rps).unwrap()
@@ -10655,6 +10574,4 @@ Build something real with it.
 ---
 
 *→ Java reference: Spring Boot production hardening, Micrometer, Spring Security, GraalVM native (Ch 24)*
-
----
 

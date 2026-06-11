@@ -67,7 +67,7 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
     use rig::completion::CompletionRequestBuilder;
     // Cheap API probe — just check auth works
     let probe = CompletionRequestBuilder::new(
-        rig::message::Message::user("ping"),
+        rig::completion::Message::user("ping"),
     ).max_tokens(1).build();
 
     match state.openai_client.completion_model(openai::GPT_4O_MINI)
@@ -214,7 +214,7 @@ struct AppState {
 impl AppState {
     fn new(config: &Config) -> anyhow::Result<Self> {
         let client = Arc::new(
-            rig::providers::openai::Client::from_env()?
+            rig::providers::openai::Client::from_env()
         );
         let quota   = Quota::per_second(
             std::num::NonZeroU32::new(config.rate_limit_rps).unwrap()

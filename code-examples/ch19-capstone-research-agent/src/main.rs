@@ -125,7 +125,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let rig_client = openai::Client::from_env()?;
+    let rig_client = openai::Client::from_env();
     let swiftide_client = SwiftideOpenAI::builder()
         .default_embed_model("text-embedding-3-small")
         .default_prompt_model("gpt-4o-mini")

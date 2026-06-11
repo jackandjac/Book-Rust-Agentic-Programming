@@ -101,7 +101,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
 
     // Step 1: Create the embedding model.
     // TEXT_EMBEDDING_3_SMALL is fast and cost-effective for retrieval tasks.

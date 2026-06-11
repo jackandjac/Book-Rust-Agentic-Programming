@@ -178,9 +178,10 @@ With this pattern:
 ### Building an Extractor
 
 ```rust
+use rig::client::ProviderClient;
 use rig::providers::openai;
 
-let client = openai::Client::from_env()?;
+let client = openai::Client::from_env();
 
 // Type parameter T must impl: JsonSchema + Deserialize + Serialize + Send + Sync
 let extractor = client
@@ -250,7 +251,8 @@ struct SentimentResult {
     reasoning: String,
 }
 
-let extractor = openai::Client::from_env()?
+// use rig::client::ProviderClient;  // required if not already imported
+let extractor = openai::Client::from_env()
     .extractor::<SentimentResult>(openai::GPT_4O_MINI)
     .build();
 
@@ -403,7 +405,7 @@ struct Sentiment {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
 
     let names_extractor = client
         .extractor::<Names>(openai::GPT_4O_MINI)
@@ -541,7 +543,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let extractor = openai::Client::from_env()?
+    let extractor = openai::Client::from_env()
         .extractor::<Resume>(openai::GPT_4O_MINI)
         .preamble(
             "Extract structured resume data from the provided text. \

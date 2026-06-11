@@ -70,22 +70,8 @@ async fn chat_stream(
 
     // Spawn a task to drive the rig stream and forward events to the channel.
     tokio::spawn(async move {
-        // stream_prompt returns a StreamingPromptRequest that implements
-        // IntoFuture — awaiting it yields a pinned stream of MultiTurnStreamItem.
-        let stream = match agent
-            .stream_prompt(&message)
-            .conversation(&conv_id)
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let err_event = Event::default()
-                    .event("error")
-                    .data(e.to_string());
-                let _ = tx.send(Ok(err_event)).await;
-                return;
-            }
-        };
+        // stream_prompt returns StreamingPromptRequest; awaiting it yields the stream.
+        let mut stream = agent.stream_prompt(&message).await;
 
         // Pin the stream so we can call .next() on it in the async loop.
         tokio::pin!(stream);
@@ -93,16 +79,15 @@ async fn chat_stream(
         while let Some(item) = stream.next().await {
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => {
-                    // StreamedAssistantContent::Text carries incremental text chunks.
-                    if let StreamedAssistantContent::Text(text) = content {
-                        let event = Event::default().data(text.text);
+                    // StreamedAssistantContent::Text(chunk) — chunk is a String directly.
+                    if let StreamedAssistantContent::Text(chunk) = content {
+                        let event = Event::default().data(chunk);
                         if tx.send(Ok(event)).await.is_err() {
                             // Client disconnected.
                             break;
                         }
                     }
-                    // ToolCall and Reasoning variants are silently skipped here —
-                    // a production handler would surface them differently.
+                    // ToolCallDelta and FinalUsage variants are silently skipped.
                 }
                 Ok(MultiTurnStreamItem::FinalResponse(_)) => {
                     // Stream complete — send a sentinel so the client can close.
@@ -151,7 +136,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = openai::Client::from_env()?;
+    let client = openai::Client::from_env();
 
     let agent = client
         .agent(openai::GPT_4O_MINI)

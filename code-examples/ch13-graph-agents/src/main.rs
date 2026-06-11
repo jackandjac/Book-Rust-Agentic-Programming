@@ -173,7 +173,7 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
-    let client = Arc::new(openai::Client::from_env()?);
+    let client = Arc::new(openai::Client::from_env());
     let graph = build_react_graph(client);
     let runner = FlowRunner::new(
         Arc::new(graph),

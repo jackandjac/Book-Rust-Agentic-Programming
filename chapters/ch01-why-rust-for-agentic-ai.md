@@ -76,11 +76,11 @@ These libraries have thousands of production deployments, comprehensive document
 
 | Crate | Version | What it does |
 |-------|---------|-------------|
-| `rig-core` | 0.37.0 | LLM integration, tool calling, agents, memory (7.3k GitHub stars) |
+| `rig-core` | 0.37.0 | LLM integration, tool calling, agents, embeddings, RAG |
 | `async-openai` | 0.38.1 | Direct OpenAI API client (4.8M downloads) |
 | `swiftide` | 0.32.1 | Streaming RAG indexing pipelines |
 | `autoagents` | 0.3.7 | Multi-agent systems with actor model |
-| `graph-flow` | 0.5.1 | Graph-based workflow orchestration (small, 312 stars) |
+| `graph-flow` | 0.5.1 | Graph-based workflow orchestration (small, early-stage project) |
 | `rmcp` | 1.6.0 | Model Context Protocol — the only 1.x stable crate |
 
 **The honest state of the Rust ecosystem:**
@@ -238,10 +238,10 @@ Here's the mapping at a high level:
 | Java concept | Rust equivalent | Chapters |
 |-------------|----------------|---------|
 | `ChatClient` (Spring AI) | `rig::completion::Prompt` | Ch 3–5 |
-| `@Tool` annotation | `#[tool]` attribute + `Tool` trait | Ch 4 |
-| `ChatMemory` (LangChain4j) | In-memory `Vec` + session storage traits | Ch 7 |
-| `EmbeddingStoreIngestor` | Swiftide pipeline | Ch 6 |
-| `StateGraph` (LangGraph4j) | `graph-flow::StateGraph` | Ch 8 |
+| `@Tool` annotation | `#[rig_tool]` macro + `Tool` trait | Ch 4 |
+| `ChatMemory` (LangChain4j) | Manual `Vec<Message>` + sliding-window truncation | Ch 6, Ch 10 |
+| `EmbeddingStoreIngestor` | Swiftide pipeline | Ch 9 |
+| `StateGraph` (LangGraph4j) | `graph-flow::StateGraph` | Ch 12 |
 | `@AiService` interface | Async trait + generic functions | Ch 4–5 |
 | MCP client (Spring AI) | `rmcp` client | Ch 11 |
 | `CompletableFuture` | `async/await` + `tokio::spawn` | Ch 2 |

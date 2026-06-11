@@ -13,6 +13,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
 async-openai = { workspace = true }
+futures = { workspace = true }
 
 [[bin]]
 name = "streaming-chat"
